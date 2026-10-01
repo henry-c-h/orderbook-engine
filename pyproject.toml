@@ -1,0 +1,26 @@
+[project]
+name = "orderbook-engine"
+version = "0.1.0"
+description = "Deterministic limit order book matching engine"
+readme = "README.md"
+authors = [
+  { name = "henryc", email = "66845831+henry-c-h@users.noreply.github.com" },
+]
+requires-python = ">=3.13"
+dependencies = []
+
+[project.scripts]
+orderbook-engine = "orderbook_engine:main"
+
+[build-system]
+requires = ["uv_build>=0.12.10,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+  "hypothesis>=6.168.0",
+  "pre-commit>=4.6.2",
+  "pyright>=1.1.411",
+  "pytest>=9.1.1",
+  "ruff>=0.16.6",
+]
