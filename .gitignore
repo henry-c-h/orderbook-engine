@@ -8,3 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Local claude instructions
+CLAUDE.local.md
+.claude/settings.local.json
