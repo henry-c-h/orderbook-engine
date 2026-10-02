@@ -23,7 +23,7 @@ class TimeInForce(StrEnum):
     IOC = "IOC"  # immediate or cancel: remainder is cancelled
 
 
-def _is_pos_int(value: object) -> bool:
+def is_pos_int(value: object) -> bool:
     # bool is a subclass of int; reject it explicitly.
     return type(value) is int and value > 0
 
@@ -45,10 +45,10 @@ class Order:
             raise ValueError("order_id must be non-empty")
         if not self.participant_id:
             raise ValueError("participant_id must be non-empty")
-        if not _is_pos_int(self.quantity):
+        if not is_pos_int(self.quantity):
             raise ValueError(f"quantity must be a positive int, got {self.quantity!r}")
         if self.order_type is OrderType.LIMIT:
-            if not _is_pos_int(self.price):
+            if not is_pos_int(self.price):
                 raise ValueError(
                     f"limit order needs a positive int price, got {self.price!r}"
                 )
@@ -73,7 +73,7 @@ class Trade:
     resting_participant_id: str
 
     def __post_init__(self) -> None:
-        if not _is_pos_int(self.price) or not _is_pos_int(self.quantity):
+        if not is_pos_int(self.price) or not is_pos_int(self.quantity):
             raise ValueError("trade price and quantity must be positive ints")
 
 
