@@ -101,10 +101,18 @@ class TestAccepted:
 
 
 class TestRejected:
-    def test_carries_order_id_and_reason(self) -> None:
-        rejected = Rejected(order_id="o9", reason=RejectReason.UNKNOWN_ORDER)
+    def test_reasons_are_exactly_the_ones_in_the_spec(self) -> None:
+        assert set(RejectReason) == {
+            RejectReason.UNKNOWN_ORDER,
+            RejectReason.QUANTITY_BELOW_FILLED,
+            RejectReason.DUPLICATE_ORDER_ID,
+        }
+
+    @pytest.mark.parametrize("reason", list(RejectReason))
+    def test_carries_order_id_and_every_reason(self, reason: RejectReason) -> None:
+        rejected = Rejected(order_id="o9", reason=reason)
         assert rejected.order_id == "o9"
-        assert rejected.reason is RejectReason.UNKNOWN_ORDER
+        assert rejected.reason is reason
 
 
 class TestCancelled:

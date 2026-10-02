@@ -13,7 +13,9 @@ class CancelReason(StrEnum):
 
 
 class RejectReason(StrEnum):
-    UNKNOWN_ORDER = "UNKNOWN_ORDER"  # cancel/replace of an unknown or finished id
+    UNKNOWN_ORDER = "UNKNOWN_ORDER"  # cancel/amend of an unknown or finished id
+    QUANTITY_BELOW_FILLED = "QUANTITY_BELOW_FILLED"  # amend total <= already filled
+    DUPLICATE_ORDER_ID = "DUPLICATE_ORDER_ID"  # submit with an id that is still live
 
 
 @dataclass(frozen=True, slots=True)
