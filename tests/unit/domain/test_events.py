@@ -46,8 +46,15 @@ def make_cancelled(*, quantity: Any = 10) -> Cancelled:
     )
 
 
-def make_replaced(*, seq: Any = 2, price: Any = 101, quantity: Any = 5) -> Replaced:
-    return Replaced(order_id="o1", seq=seq, price=price, quantity=quantity)
+def make_replaced(
+    *, seq: Any = 2, new_price: Any = 101, new_total_quantity: Any = 5
+) -> Replaced:
+    return Replaced(
+        order_id="o1",
+        seq=seq,
+        new_price=new_price,
+        new_total_quantity=new_total_quantity,
+    )
 
 
 def all_events() -> list[Event]:
@@ -114,22 +121,22 @@ class TestCancelled:
 
 
 class TestReplaced:
-    def test_carries_new_price_quantity_and_seq(self) -> None:
-        replaced = make_replaced(price=101, quantity=5)
+    def test_carries_new_price_total_quantity_and_seq(self) -> None:
+        replaced = make_replaced(new_price=101, new_total_quantity=5)
         assert (replaced.order_id, replaced.seq) == ("o1", 2)
-        assert (replaced.price, replaced.quantity) == (101, 5)
+        assert (replaced.new_price, replaced.new_total_quantity) == (101, 5)
 
     @pytest.mark.parametrize("seq", [0, -1, True, 1.5, "1", None])
     def test_rejects_invalid_seq(self, seq: Any) -> None:
         with pytest.raises(ValueError, match="seq"):
             make_replaced(seq=seq)
 
-    @pytest.mark.parametrize("price", [0, -1, True, 100.5, "100", None])
-    def test_rejects_invalid_price(self, price: Any) -> None:
-        with pytest.raises(ValueError, match="price and quantity"):
-            make_replaced(price=price)
+    @pytest.mark.parametrize("new_price", [0, -1, True, 100.5, "100", None])
+    def test_rejects_invalid_new_price(self, new_price: Any) -> None:
+        with pytest.raises(ValueError, match="new_price"):
+            make_replaced(new_price=new_price)
 
-    @pytest.mark.parametrize("quantity", [0, -1, True, 1.5, "10", None])
-    def test_rejects_invalid_quantity(self, quantity: Any) -> None:
-        with pytest.raises(ValueError, match="price and quantity"):
-            make_replaced(quantity=quantity)
+    @pytest.mark.parametrize("new_total_quantity", [0, -1, True, 1.5, "10", None])
+    def test_rejects_invalid_new_total_quantity(self, new_total_quantity: Any) -> None:
+        with pytest.raises(ValueError, match="new_total_quantity"):
+            make_replaced(new_total_quantity=new_total_quantity)

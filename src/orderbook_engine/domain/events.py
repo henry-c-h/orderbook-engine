@@ -51,18 +51,30 @@ class Cancelled:
 
 @dataclass(frozen=True, slots=True)
 class Replaced:
-    """Cancel/replace: same order_id, new price and quantity, new `seq`."""
+    """Cancel/replace: same order_id, new price and total quantity, new `seq`.
+
+    `new_total_quantity` includes anything already filled. A replica derives
+    the remaining quantity as total minus the filled quantity from the trades
+    it has already applied.
+    """
 
     order_id: str
     seq: int
-    price: int
-    quantity: int
+    new_price: int
+    new_total_quantity: int
 
     def __post_init__(self) -> None:
         if not is_pos_int(self.seq):
             raise ValueError(f"seq must be a positive int, got {self.seq!r}")
-        if not is_pos_int(self.price) or not is_pos_int(self.quantity):
-            raise ValueError("replaced price and quantity must be positive ints")
+        if not is_pos_int(self.new_price):
+            raise ValueError(
+                f"new_price must be a positive int, got {self.new_price!r}"
+            )
+        if not is_pos_int(self.new_total_quantity):
+            raise ValueError(
+                "new_total_quantity must be a positive int, "
+                f"got {self.new_total_quantity!r}"
+            )
 
 
 type Event = Accepted | Rejected | Trade | Cancelled | Replaced
