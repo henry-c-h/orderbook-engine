@@ -5,14 +5,14 @@ Single instrument, single-threaded deterministic core. Everything else (async, A
 ## Representation
 
 - Prices are integer **ticks** (> 0). Quantities are integer **lots** (> 0). No floats anywhere.
-- Ordering uses an engine-assigned monotonically increasing **sequence number**, never wall-clock time.
+- Ordering uses an engine-assigned monotonically increasing **sequence number** (integer, > 0), never wall-clock time.
 
 ## Order types
 
 - `LIMIT` with `GTC` (rests on the book) or `IOC` (fill what you can now, cancel the rest).
 - `MARKET` (always IOC, no price). Unfilled remainder is cancelled; no liquidity means zero fills and a cancel.
 - Cancel by `order_id`. Unknown or already-filled/cancelled id -> `Rejected`.
-- Amend = **cancel/replace**: same `order_id`, new price/qty, **new sequence number (loses time priority)**.
+- Amend = **cancel/replace**: same `order_id`, new price/qty, **new sequence number (loses time priority)**. See "Amend rules".
 
 ## Matching rules
 
@@ -21,6 +21,20 @@ Single instrument, single-threaded deterministic core. Everything else (async, A
 3. A trade executes at the **resting order's price**.
 4. Partial fills allowed. A GTC limit remainder rests; an IOC remainder is cancelled.
 5. A limit order crosses if buy price >= best ask or sell price <= best bid.
+
+## Amend rules
+
+- An amend names a live order by `order_id` and gives a new price and a new **total** quantity. The total includes anything already filled, so the new remaining quantity is the new total minus the quantity already filled.
+- The new total must be greater than the quantity already filled. Otherwise the amend is `Rejected(QUANTITY_BELOW_FILLED)` and the order is untouched.
+- A valid amend is processed as a newly arriving order: the order leaves its queue position, receives a new sequence number and is matched under the normal rules. If the new price crosses the book it trades immediately, and self-trade prevention applies. Any remainder rests as a GTC limit order.
+- Events: `Replaced` first, then any `Trade` or `Cancelled` events produced by matching.
+- Amending an unknown or already filled/cancelled id is `Rejected(UNKNOWN_ORDER)`.
+
+## Order ids
+
+- `order_id` is unique across all participants while the order is live. Submitting an order whose `order_id` is already live is `Rejected(DUPLICATE_ORDER_ID)` and the book is unchanged.
+- Filled and cancelled orders are no longer live, and their ids may be reused. This keeps the engine's id index bounded by the number of live orders.
+- The engine has no concept of client order ids. Mapping a participant's client order id to an engine `order_id` is the gateway's job.
 
 ## Self-trade prevention: cancel-newest
 
@@ -34,7 +48,7 @@ Same input sequence must always produce the same event sequence (determinism is 
 ## Invariants (Hypothesis targets)
 
 - Book is never crossed after any operation (best bid < best ask).
-- Quantity conservation: submitted = filled + cancelled + resting.
+- Quantity conservation: for every order, current total quantity = filled + cancelled + resting. An amend changes the total.
 - Within a level, resting orders are in strictly increasing sequence order.
 - No trade has non-positive price or quantity; trade price equals the resting order's price.
 - Replay of the same input log yields an identical event log.
