@@ -7,7 +7,9 @@ authors = [
   { name = "henryc", email = "66845831+henry-c-h@users.noreply.github.com" },
 ]
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "sortedcontainers>=2.4.0",
+]
 
 [project.scripts]
 orderbook-engine = "orderbook_engine:main"

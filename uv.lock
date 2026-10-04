@@ -134,6 +134,9 @@ wheels = [
 name = "orderbook-engine"
 version = "0.1.0"
 source = { editable = "." }
+dependencies = [
+    { name = "sortedcontainers" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -145,6 +148,7 @@ dev = [
 ]
 
 [package.metadata]
+requires-dist = [{ name = "sortedcontainers", specifier = ">=2.4.0" }]
 
 [package.metadata.requires-dev]
 dev = [
