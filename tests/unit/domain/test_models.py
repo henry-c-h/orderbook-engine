@@ -163,3 +163,25 @@ class TestRestingOrder:
         resting.remaining -= 4
         assert resting.remaining == 6
         assert order.quantity == 10
+
+    def test_from_order_takes_the_limit_price(self) -> None:
+        # given a limit order at 100
+        order = make_order(price=100)
+
+        # when it is placed on the book
+        resting = RestingOrder.from_order(order, seq=1)
+
+        # then the resting order carries that price
+        assert resting.limit_price == 100
+
+    def test_from_order_rejects_a_market_order(self) -> None:
+        # given a market order, which has no price
+        market = make_order(
+            order_type=OrderType.MARKET,
+            price=None,
+            time_in_force=TimeInForce.IOC,
+        )
+
+        # when it is placed on the book, then it is rejected
+        with pytest.raises(ValueError, match="limit"):
+            RestingOrder.from_order(market, seq=1)

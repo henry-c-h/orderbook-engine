@@ -84,7 +84,15 @@ class RestingOrder:
     order: Order
     seq: int
     remaining: int
+    limit_price: int
 
     @classmethod
     def from_order(cls, order: Order, seq: int) -> RestingOrder:
-        return cls(order=order, seq=seq, remaining=order.quantity)
+        if order.price is None:
+            raise ValueError("only a limit order can rest on the book")
+        return cls(
+            order=order,
+            seq=seq,
+            remaining=order.quantity,
+            limit_price=order.price,
+        )
