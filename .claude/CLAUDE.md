@@ -18,6 +18,12 @@ Don't overclaim in README or docs.
 
 Run all three before every commit.
 
+## Testing
+
+- Put a `# given`, `# when` and `# then` comment above each block of a test,
+  so a test's purpose can be scanned at a glance. Leave out a block only if
+  the test has nothing to put in it.
+
 ## Commits
 
 - Only commit when asked. Never push, force-push or rewrite pushed history

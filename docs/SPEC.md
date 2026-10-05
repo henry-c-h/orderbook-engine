@@ -43,7 +43,9 @@ If the incoming order would match a resting order from the **same participant**,
 ## Events emitted (the engine's only output)
 
 `Accepted`, `Rejected(reason)`, `Trade`, `Cancelled(reason)`, `Replaced`.
-Same input sequence must always produce the same event sequence (determinism is the basis for replay/backtest).
+
+- Same input sequence must always produce the same event sequence (determinism is the basis for replay/backtest).
+- Event order per command is Accepted/Replaced, then Trades in match order, then Cancelled. Rejected stands alone.
 
 ## Invariants (Hypothesis targets)
 
