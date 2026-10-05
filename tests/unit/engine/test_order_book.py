@@ -79,6 +79,23 @@ def sell(
     )
 
 
+def create_market_order(
+    order_id: str,
+    side: Side,
+    *,
+    quantity: int = 10,
+    participant_id: str = "p1",
+) -> Order:
+    return Order(
+        order_id=order_id,
+        participant_id=participant_id,
+        side=side,
+        order_type=OrderType.MARKET,
+        quantity=quantity,
+        time_in_force=TimeInForce.IOC,
+    )
+
+
 def make_trade(
     trade_id: int, price: int, quantity: int, aggressor: Order, resting: Order
 ) -> Trade:
@@ -154,22 +171,429 @@ class TestSubmitRestingOrders:
         assert OrderBook().orders_at(Side.SELL, 100) == []
 
 
-class TestSubmitNotYetSupported:
-    def test_ioc_limit_raises(self) -> None:
-        with pytest.raises(NotImplementedError):
-            OrderBook().submit(buy("b1", 100, time_in_force=TimeInForce.IOC), seq=1)
+def assert_no_trace(book: OrderBook, order: Order) -> None:
+    """The book holds nothing for `order`, in the id index or at its price level.
 
-    def test_market_order_raises(self) -> None:
-        market = Order(
-            order_id="m1",
-            participant_id="p1",
-            side=Side.BUY,
-            order_type=OrderType.MARKET,
-            quantity=10,
-            time_in_force=TimeInForce.IOC,
+    A market order has no price level, so only the id index is checked for it.
+    """
+    # the id index: a cancel finds nothing (a rejected cancel changes nothing)
+    assert book.cancel(order.order_id) == [
+        Rejected(order.order_id, RejectReason.UNKNOWN_ORDER)
+    ]
+    # the price level it would have rested at
+    if order.price is not None:
+        assert order.order_id not in book.orders_at(order.side, order.price)
+
+
+class TestIocLimitOrder:
+    def test_fully_filled_emits_no_cancelled(self) -> None:
+        # given a resting sell of 10 at 100
+        book = OrderBook()
+        resting = sell("s1", 100, participant_id=P1)
+        incoming = buy("b1", 100, participant_id=P2, time_in_force=TimeInForce.IOC)
+        book.submit(resting, seq=1)
+
+        # when an IOC buy of 10 at 100 arrives
+        events = book.submit(incoming, seq=2)
+
+        # then it trades in full and nothing is cancelled
+        assert events == [
+            Accepted(seq=2, order=incoming),
+            make_trade(1, 100, 10, incoming, resting),
+        ]
+        assert_no_trace(book, incoming)
+        assert_not_crossed(book)
+
+    def test_partial_fill_cancels_the_remainder_and_nothing_rests(self) -> None:
+        # given a resting sell of 4 at 100
+        book = OrderBook()
+        resting = sell("s1", 100, quantity=4, participant_id=P1)
+        incoming = buy(
+            "b1", 105, quantity=10, participant_id=P2, time_in_force=TimeInForce.IOC
         )
-        with pytest.raises(NotImplementedError):
-            OrderBook().submit(market, seq=1)
+        book.submit(resting, seq=1)
+
+        # when an IOC buy of 10 at 105 arrives
+        events = book.submit(incoming, seq=2)
+
+        # then it trades 4, the other 6 are cancelled, and nothing rests
+        assert events == [
+            Accepted(seq=2, order=incoming),
+            make_trade(1, 100, 4, incoming, resting),
+            Cancelled("b1", 6, CancelReason.IOC_REMAINDER),
+        ]
+        assert book.best_bid is None
+        assert book.best_ask is None
+        assert book.orders_at(Side.BUY, 105) == []
+        assert_no_trace(book, incoming)
+
+    def test_order_that_does_not_cross_is_cancelled_in_full(self) -> None:
+        # given a resting sell of 10 at 105
+        book = OrderBook()
+        book.submit(sell("s1", 105, participant_id=P1), seq=1)
+
+        # when an IOC buy of 10 at 100 arrives, which does not cross
+        incoming = buy("b1", 100, participant_id=P2, time_in_force=TimeInForce.IOC)
+        events = book.submit(incoming, seq=2)
+
+        # then it is accepted and cancelled in full, and the book is unchanged
+        assert events == [
+            Accepted(seq=2, order=incoming),
+            Cancelled("b1", 10, CancelReason.IOC_REMAINDER),
+        ]
+        assert book.best_bid is None
+        assert book.best_ask == 105
+        assert book.orders_at(Side.SELL, 105) == ["s1"]
+        assert_no_trace(book, incoming)
+
+    def test_ioc_on_an_empty_book_is_cancelled_in_full(self) -> None:
+        # given an empty book
+        book = OrderBook()
+
+        # when an IOC sell of 10 at 100 arrives
+        incoming = sell("s1", 100, participant_id=P1, time_in_force=TimeInForce.IOC)
+        events = book.submit(incoming, seq=1)
+
+        # then it is accepted and cancelled in full, and nothing rests
+        assert events == [
+            Accepted(seq=1, order=incoming),
+            Cancelled("s1", 10, CancelReason.IOC_REMAINDER),
+        ]
+        assert book.best_ask is None
+        assert_no_trace(book, incoming)
+
+    def test_buy_stops_at_its_limit_price(self) -> None:
+        # given resting sells of 5 at 101, 102 and 103
+        book = OrderBook()
+        s1 = sell("s1", 101, quantity=5, participant_id=P1)
+        s2 = sell("s2", 102, quantity=5, participant_id=P1)
+        s3 = sell("s3", 103, quantity=5, participant_id=P1)
+        for seq, order in enumerate([s1, s2, s3], start=1):
+            book.submit(order, seq=seq)
+
+        # when an IOC buy of 15 at 102 arrives
+        incoming = buy(
+            "b1", 102, quantity=15, participant_id=P2, time_in_force=TimeInForce.IOC
+        )
+        events = book.submit(incoming, seq=4)
+
+        # then it trades at 101 and 102, does not trade through to 103,
+        # and cancels the other 5
+        assert events == [
+            Accepted(seq=4, order=incoming),
+            make_trade(1, 101, 5, incoming, s1),
+            make_trade(2, 102, 5, incoming, s2),
+            Cancelled("b1", 5, CancelReason.IOC_REMAINDER),
+        ]
+        assert book.best_ask == 103
+        assert book.orders_at(Side.SELL, 103) == ["s3"]
+        assert book.best_bid is None
+        assert_no_trace(book, incoming)
+
+    def test_sell_stops_at_its_limit_price(self) -> None:
+        # given resting buys of 5 at 101, 100 and 99
+        book = OrderBook()
+        b1 = buy("b1", 101, quantity=5, participant_id=P1)
+        b2 = buy("b2", 100, quantity=5, participant_id=P1)
+        b3 = buy("b3", 99, quantity=5, participant_id=P1)
+        for seq, order in enumerate([b1, b2, b3], start=1):
+            book.submit(order, seq=seq)
+
+        # when an IOC sell of 15 at 100 arrives
+        incoming = sell(
+            "s1", 100, quantity=15, participant_id=P2, time_in_force=TimeInForce.IOC
+        )
+        events = book.submit(incoming, seq=4)
+
+        # then it trades at 101 and 100, does not trade through to 99,
+        # and cancels the other 5
+        assert events == [
+            Accepted(seq=4, order=incoming),
+            make_trade(1, 101, 5, incoming, b1),
+            make_trade(2, 100, 5, incoming, b2),
+            Cancelled("s1", 5, CancelReason.IOC_REMAINDER),
+        ]
+        assert book.best_bid == 99
+        assert book.best_ask is None
+        assert_no_trace(book, incoming)
+
+    def test_duplicate_live_id_is_rejected_before_matching(self) -> None:
+        # given a resting sell with id x at 100
+        book = OrderBook()
+        book.submit(sell("x", 100, participant_id=P1), seq=1)
+
+        # when an IOC buy that reuses id x arrives, where it would cross
+        events = book.submit(
+            buy("x", 100, participant_id=P2, time_in_force=TimeInForce.IOC), seq=2
+        )
+
+        # then it is rejected, with no trade and no cancel, and the book is unchanged
+        assert events == [Rejected("x", RejectReason.DUPLICATE_ORDER_ID)]
+        assert book.orders_at(Side.SELL, 100) == ["x"]
+
+
+class TestMarketOrder:
+    def test_buy_sweeps_several_ask_levels(self) -> None:
+        # given resting sells of 5 at 103, 101 and 102, submitted in that order
+        book = OrderBook()
+        s1 = sell("s1", 103, quantity=5, participant_id=P1)
+        s2 = sell("s2", 101, quantity=5, participant_id=P1)
+        s3 = sell("s3", 102, quantity=5, participant_id=P1)
+        for seq, order in enumerate([s1, s2, s3], start=1):
+            book.submit(order, seq=seq)
+
+        # when a market buy of 15 arrives
+        incoming = create_market_order("m1", Side.BUY, quantity=15, participant_id=P2)
+        events = book.submit(incoming, seq=4)
+
+        # then it trades at 101, 102, 103, each at the resting price, with no cancel
+        assert events == [
+            Accepted(seq=4, order=incoming),
+            make_trade(1, 101, 5, incoming, s2),
+            make_trade(2, 102, 5, incoming, s3),
+            make_trade(3, 103, 5, incoming, s1),
+        ]
+        assert book.best_ask is None
+        assert_no_trace(book, incoming)
+
+    def test_buy_fills_a_level_in_arrival_order(self) -> None:
+        # given three resting sells of 5 at 100, in arrival order s1, s2, s3
+        book = OrderBook()
+        s1 = sell("s1", 100, quantity=5, participant_id=P1)
+        s2 = sell("s2", 100, quantity=5, participant_id=P1)
+        s3 = sell("s3", 100, quantity=5, participant_id=P1)
+        for seq, order in enumerate([s1, s2, s3], start=1):
+            book.submit(order, seq=seq)
+
+        # when a market buy of 7 arrives
+        incoming = create_market_order("m1", Side.BUY, quantity=7, participant_id=P2)
+        events = book.submit(incoming, seq=4)
+
+        # then it fills s1 and 2 of s2, and s2 keeps the front of the queue
+        assert events == [
+            Accepted(seq=4, order=incoming),
+            make_trade(1, 100, 5, incoming, s1),
+            make_trade(2, 100, 2, incoming, s2),
+        ]
+        assert book.orders_at(Side.SELL, 100) == ["s2", "s3"]
+
+    def test_sell_sweeps_several_bid_levels(self) -> None:
+        # given resting buys of 5 at 99, 101 and 100, submitted in that order
+        book = OrderBook()
+        b1 = buy("b1", 99, quantity=5, participant_id=P1)
+        b2 = buy("b2", 101, quantity=5, participant_id=P1)
+        b3 = buy("b3", 100, quantity=5, participant_id=P1)
+        for seq, order in enumerate([b1, b2, b3], start=1):
+            book.submit(order, seq=seq)
+
+        # when a market sell of 15 arrives
+        incoming = create_market_order("m1", Side.SELL, quantity=15, participant_id=P2)
+        events = book.submit(incoming, seq=4)
+
+        # then it trades at 101, 100, 99, each at the resting price, with no cancel
+        assert events == [
+            Accepted(seq=4, order=incoming),
+            make_trade(1, 101, 5, incoming, b2),
+            make_trade(2, 100, 5, incoming, b3),
+            make_trade(3, 99, 5, incoming, b1),
+        ]
+        assert book.best_bid is None
+        assert_no_trace(book, incoming)
+
+    def test_buy_on_a_thin_book_cancels_the_remainder(self) -> None:
+        # given resting sells of 4 at 100 and 3 at 200
+        book = OrderBook()
+        s1 = sell("s1", 100, quantity=4, participant_id=P1)
+        s2 = sell("s2", 200, quantity=3, participant_id=P1)
+        book.submit(s1, seq=1)
+        book.submit(s2, seq=2)
+
+        # when a market buy of 10 arrives
+        incoming = create_market_order("m1", Side.BUY, quantity=10, participant_id=P2)
+        events = book.submit(incoming, seq=3)
+
+        # then it takes all 7 on offer at any price, and cancels the other 3
+        assert events == [
+            Accepted(seq=3, order=incoming),
+            make_trade(1, 100, 4, incoming, s1),
+            make_trade(2, 200, 3, incoming, s2),
+            Cancelled("m1", 3, CancelReason.IOC_REMAINDER),
+        ]
+        assert book.best_ask is None
+        assert book.best_bid is None
+        assert_no_trace(book, incoming)
+
+    def test_sell_on_a_thin_book_cancels_the_remainder(self) -> None:
+        # given a resting buy of 4 at 100
+        book = OrderBook()
+        b1 = buy("b1", 100, quantity=4, participant_id=P1)
+        book.submit(b1, seq=1)
+
+        # when a market sell of 10 arrives
+        incoming = create_market_order("m1", Side.SELL, quantity=10, participant_id=P2)
+        events = book.submit(incoming, seq=2)
+
+        # then it trades 4 and cancels the other 6
+        assert events == [
+            Accepted(seq=2, order=incoming),
+            make_trade(1, 100, 4, incoming, b1),
+            Cancelled("m1", 6, CancelReason.IOC_REMAINDER),
+        ]
+        assert book.best_bid is None
+        assert book.best_ask is None
+        assert_no_trace(book, incoming)
+
+    def test_market_buy_on_an_empty_book_is_cancelled_in_full(self) -> None:
+        # given an empty book
+        book = OrderBook()
+
+        # when a market buy of 10 arrives
+        incoming = create_market_order("m1", Side.BUY, participant_id=P1)
+        events = book.submit(incoming, seq=1)
+
+        # then it is accepted and cancelled in full, with no trades
+        assert events == [
+            Accepted(seq=1, order=incoming),
+            Cancelled("m1", 10, CancelReason.IOC_REMAINDER),
+        ]
+        assert book.best_bid is None
+        assert book.best_ask is None
+        assert_no_trace(book, incoming)
+
+    def test_market_sell_on_an_empty_book_is_cancelled_in_full(self) -> None:
+        # given an empty book
+        book = OrderBook()
+
+        # when a market sell of 10 arrives
+        incoming = create_market_order("m1", Side.SELL, participant_id=P1)
+        events = book.submit(incoming, seq=1)
+
+        # then it is accepted and cancelled in full, with no trades
+        assert events == [
+            Accepted(seq=1, order=incoming),
+            Cancelled("m1", 10, CancelReason.IOC_REMAINDER),
+        ]
+        assert book.best_bid is None
+        assert book.best_ask is None
+        assert_no_trace(book, incoming)
+
+    def test_market_buy_ignores_the_same_side_of_the_book(self) -> None:
+        # given only a resting buy of 10 at 100
+        book = OrderBook()
+        book.submit(buy("b1", 100, participant_id=P1), seq=1)
+
+        # when a market buy of 10 arrives
+        incoming = create_market_order("m1", Side.BUY, participant_id=P2)
+        events = book.submit(incoming, seq=2)
+
+        # then there is nothing to trade against: it is cancelled and b1 is untouched
+        assert events == [
+            Accepted(seq=2, order=incoming),
+            Cancelled("m1", 10, CancelReason.IOC_REMAINDER),
+        ]
+        assert book.orders_at(Side.BUY, 100) == ["b1"]
+
+    def test_duplicate_live_id_is_rejected_before_matching(self) -> None:
+        # given a resting sell with id x at 100
+        book = OrderBook()
+        book.submit(sell("x", 100, participant_id=P1), seq=1)
+
+        # when a market buy that reuses id x arrives
+        events = book.submit(
+            create_market_order("x", Side.BUY, participant_id=P2), seq=2
+        )
+
+        # then it is rejected, with no trade and no cancel, and the book is unchanged
+        assert events == [Rejected("x", RejectReason.DUPLICATE_ORDER_ID)]
+        assert book.orders_at(Side.SELL, 100) == ["x"]
+
+
+class TestIocAndMarketAcrossCommands:
+    def test_ioc_and_market_ids_can_be_submitted_again(self) -> None:
+        # given an IOC remainder and a market remainder were both cancelled
+        book = OrderBook()
+        book.submit(buy("i1", 100, time_in_force=TimeInForce.IOC), seq=1)
+        book.submit(create_market_order("m1", Side.SELL), seq=2)
+
+        # when the same ids are submitted again
+        again_ioc = buy("i1", 100, time_in_force=TimeInForce.IOC)
+        again_market = create_market_order("m1", Side.SELL)
+        ioc_events = book.submit(again_ioc, seq=3)
+        market_events = book.submit(again_market, seq=4)
+
+        # then neither is rejected as a duplicate: both are accepted, then cancelled
+        assert ioc_events == [
+            Accepted(seq=3, order=again_ioc),
+            Cancelled("i1", 10, CancelReason.IOC_REMAINDER),
+        ]
+        assert market_events == [
+            Accepted(seq=4, order=again_market),
+            Cancelled("m1", 10, CancelReason.IOC_REMAINDER),
+        ]
+
+    @pytest.mark.parametrize("use_market_order", [False, True])
+    def test_events_are_accepted_then_trades_then_cancelled(
+        self, use_market_order: bool
+    ) -> None:
+        # given resting sells of 5 at 100 and 5 at 101
+        book = OrderBook()
+        book.submit(sell("s1", 100, quantity=5, participant_id=P1), seq=1)
+        book.submit(sell("s2", 101, quantity=5, participant_id=P1), seq=2)
+
+        # when an IOC buy or a market buy of 15 arrives, which needs more than the book has
+        incoming = (
+            create_market_order("m1", Side.BUY, quantity=15, participant_id=P2)
+            if use_market_order
+            else buy(
+                "b1",
+                101,
+                quantity=15,
+                participant_id=P2,
+                time_in_force=TimeInForce.IOC,
+            )
+        )
+        events = book.submit(incoming, seq=3)
+
+        # then the events are Accepted, the two Trades, then the Cancelled
+        assert [type(e) for e in events] == [Accepted, Trade, Trade, Cancelled]
+
+    def test_trade_ids_count_up_across_gtc_ioc_and_market_commands(self) -> None:
+        # given four resting sells of 5 at 100
+        book = OrderBook()
+        for n in range(1, 5):
+            book.submit(sell(f"s{n}", 100, quantity=5, participant_id=P1), seq=n)
+
+        # when a GTC buy, an IOC buy and a market buy each trade
+        gtc = book.submit(buy("b1", 100, quantity=5, participant_id=P2), seq=5)
+        ioc = book.submit(
+            buy(
+                "b2", 100, quantity=5, participant_id=P2, time_in_force=TimeInForce.IOC
+            ),
+            seq=6,
+        )
+        mkt = book.submit(
+            create_market_order("m1", Side.BUY, quantity=10, participant_id=P2), seq=7
+        )
+
+        # then trade ids continue 1, 2, 3, 4 across the three commands
+        assert trade_ids(gtc) + trade_ids(ioc) + trade_ids(mkt) == [1, 2, 3, 4]
+        assert_not_crossed(book)
+
+    def test_invalid_seq_is_rejected_before_the_book_changes(self) -> None:
+        # given a resting sell at 100
+        book = OrderBook()
+        book.submit(sell("s1", 100, participant_id=P1), seq=1)
+
+        # when a market buy arrives with an invalid seq, then it raises
+        with pytest.raises(ValueError, match="seq"):
+            book.submit(create_market_order("m1", Side.BUY, participant_id=P2), seq=0)
+
+        # then the sell is untouched and the next trade id is 1
+        assert book.orders_at(Side.SELL, 100) == ["s1"]
+        later = book.submit(
+            create_market_order("m2", Side.BUY, participant_id=P2), seq=2
+        )
+        assert trade_ids(later) == [1]
 
 
 class TestDuplicateOrderId:
@@ -586,3 +1010,24 @@ class TestSelfTradeGuard:
         # s1 is fine, but the sweep then reaches s2, the same participant
         with pytest.raises(NotImplementedError, match="self-trade"):
             book.submit(buy("b1", 101, quantity=20, participant_id=P2), seq=3)
+
+    def test_crossing_same_participant_ioc_raises(self) -> None:
+        # given a resting sell from p1
+        book = OrderBook()
+        book.submit(sell("s1", 100, participant_id=P1), seq=1)
+
+        # when a crossing IOC buy from p1 arrives, then the guard raises
+        with pytest.raises(NotImplementedError, match="self-trade"):
+            book.submit(
+                buy("b1", 100, participant_id=P1, time_in_force=TimeInForce.IOC),
+                seq=2,
+            )
+
+    def test_same_participant_market_order_raises(self) -> None:
+        # given a resting sell from p1
+        book = OrderBook()
+        book.submit(sell("s1", 100, participant_id=P1), seq=1)
+
+        # when a market buy from p1 arrives, then the guard raises
+        with pytest.raises(NotImplementedError, match="self-trade"):
+            book.submit(create_market_order("m1", Side.BUY, participant_id=P1), seq=2)

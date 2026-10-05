@@ -27,8 +27,8 @@ type _Level = OrderedDict[str, RestingOrder]
 class OrderBook:
     """Resting orders for one instrument. Synchronous and deterministic.
 
-    Supports GTC limit orders (matching and resting) and cancel. Market and IOC
-    orders and self-trade prevention are not supported yet.
+    Supports GTC limit orders (matching and resting), IOC limit orders, market
+    orders and cancel. Self-trade prevention is not supported yet.
     """
 
     def __init__(self) -> None:
@@ -51,17 +51,21 @@ class OrderBook:
         return list(level) if level else []
 
     def submit(self, order: Order, seq: int) -> list[Event]:
-        if order.price is None or order.time_in_force is not TimeInForce.GTC:
-            raise NotImplementedError("only GTC limit orders are supported so far")
         if order.order_id in self._orders:
             return [Rejected(order.order_id, RejectReason.DUPLICATE_ORDER_ID)]
 
         # Build the event first: it validates seq before the book is touched.
         events: list[Event] = [Accepted(seq=seq, order=order)]
-        incoming = RestingOrder.from_order(order, seq)
-        events.extend(self._match(incoming))
-        if incoming.remaining > 0:
-            self._rest(incoming)
+        trades, remaining = self._match(order, order.price)
+        events.extend(trades)
+        # Rest the remaining quantity if it's a GTC order; otherwise, cancel the remainder.
+        if remaining > 0:
+            if order.time_in_force is TimeInForce.GTC:
+                self._rest(RestingOrder.from_order(order, seq, remaining))
+            else:
+                events.append(
+                    Cancelled(order.order_id, remaining, CancelReason.IOC_REMAINDER)
+                )
         return events
 
     def cancel(self, order_id: str) -> list[Event]:
@@ -85,42 +89,47 @@ class OrderBook:
         level[resting.order.order_id] = resting
         self._orders[resting.order.order_id] = resting
 
-    def _match(self, incoming: RestingOrder) -> list[Trade]:
+    def _match(
+        self, incoming: Order, limit_price: int | None
+    ) -> tuple[list[Trade], int]:
         """Trade `incoming` against the opposite side while prices cross.
 
-        Reduces `remaining` on both orders and removes filled orders and emptied
-        levels. If the self-trade guard fires, the book may be partially mutated.
+        `limit_price` is None for a market order, which crosses at any price.
+        Returns the trades and the quantity left unfilled. Reduces `remaining`
+        on resting orders and removes filled orders and emptied levels. If the
+        self-trade guard fires, the book may be partially mutated.
         """
-        side = incoming.order.side
+        side = incoming.side
         opposite_levels = self._levels(side.opposite)
         # Best opposite price: lowest ask for a buy, highest bid for a sell.
         best_index = 0 if side is Side.BUY else -1
         trades: list[Trade] = []
+        remaining = incoming.quantity
 
-        while incoming.remaining > 0 and opposite_levels:
+        while remaining > 0 and opposite_levels:
             best_price, level = opposite_levels.peekitem(best_index)
-            if not _crosses(side, incoming.limit_price, best_price):
+            if not _crosses(side, limit_price, best_price):
                 break
 
             resting = next(iter(level.values()))  # front of the level: oldest
-            if resting.order.participant_id == incoming.order.participant_id:
+            if resting.order.participant_id == incoming.participant_id:
                 raise NotImplementedError("self-trade prevention is not supported yet")
 
-            trade_quantity = min(incoming.remaining, resting.remaining)
+            trade_quantity = min(remaining, resting.remaining)
             trades.append(
                 Trade(
                     trade_id=self._next_trade_id,
                     price=best_price,  # the resting order's price
                     quantity=trade_quantity,
-                    aggressor_order_id=incoming.order.order_id,
+                    aggressor_order_id=incoming.order_id,
                     resting_order_id=resting.order.order_id,
                     aggressor_side=side,
-                    aggressor_participant_id=incoming.order.participant_id,
+                    aggressor_participant_id=incoming.participant_id,
                     resting_participant_id=resting.order.participant_id,
                 )
             )
             self._next_trade_id += 1
-            incoming.remaining -= trade_quantity
+            remaining -= trade_quantity
             resting.remaining -= trade_quantity
 
             if resting.remaining == 0:
@@ -129,11 +138,16 @@ class OrderBook:
                 if not level:
                     del opposite_levels[best_price]
 
-        return trades
+        return trades, remaining
 
 
-def _crosses(side: Side, limit_price: int, resting_price: int) -> bool:
-    """A buy crosses asks at or below its limit; a sell crosses bids at or above."""
+def _crosses(side: Side, limit_price: int | None, resting_price: int) -> bool:
+    """A buy crosses asks at or below its limit; a sell crosses bids at or above.
+
+    No limit (a market order) crosses every price.
+    """
+    if limit_price is None:
+        return True
     if side is Side.BUY:
         return resting_price <= limit_price
     return resting_price >= limit_price

@@ -174,6 +174,29 @@ class TestRestingOrder:
         # then the resting order carries that price
         assert resting.limit_price == 100
 
+    def test_from_order_can_start_partly_filled(self) -> None:
+        # given a limit order of 10
+        order = make_order(quantity=10)
+
+        # when it is placed on the book with 6 remaining
+        resting = RestingOrder.from_order(order, seq=1, remaining=6)
+
+        # then it carries 6 remaining, and the order keeps its full quantity
+        assert resting.remaining == 6
+        assert order.quantity == 10
+
+    @pytest.mark.parametrize("remaining", [0, -1, 11])
+    def test_from_order_rejects_remaining_outside_the_order_quantity(
+        self, remaining: int
+    ) -> None:
+        # given a limit order of 10
+        order = make_order(quantity=10)
+
+        # when it is placed on the book with remaining of 0, negative or above 10,
+        # then it is rejected
+        with pytest.raises(ValueError, match="remaining"):
+            RestingOrder.from_order(order, seq=1, remaining=remaining)
+
     def test_from_order_rejects_a_market_order(self) -> None:
         # given a market order, which has no price
         market = make_order(
