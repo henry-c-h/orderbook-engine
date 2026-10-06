@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from sortedcontainers import SortedDict
 
@@ -12,6 +12,7 @@ from orderbook_engine.domain.events import (
     Event,
     Rejected,
     RejectReason,
+    Replaced,
 )
 from orderbook_engine.domain.models import (
     Order,
@@ -19,6 +20,7 @@ from orderbook_engine.domain.models import (
     Side,
     TimeInForce,
     Trade,
+    is_pos_int,
 )
 
 # Orders at one price, in arrival order (= time priority).
@@ -36,7 +38,7 @@ class OrderBook:
     """Resting orders for one instrument. Synchronous and deterministic.
 
     Supports GTC limit orders (matching and resting), IOC limit orders, market
-    orders and cancel, with cancel-newest self-trade prevention.
+    orders, cancel and amend, with cancel-newest self-trade prevention.
     """
 
     def __init__(self) -> None:
@@ -64,8 +66,71 @@ class OrderBook:
 
         # Build the event first: it validates seq before the book is touched.
         events: list[Event] = [Accepted(seq=seq, order=order)]
-        result = self._match(order, order.price)
-        events.extend(result.trades)
+        events.extend(self._process_arriving_order(order, seq, order.quantity))
+        return events
+
+    def cancel(self, order_id: str) -> list[Event]:
+        resting = self._orders.get(order_id)
+        if resting is None:
+            return [Rejected(order_id, RejectReason.UNKNOWN_ORDER)]
+
+        self._remove(resting)
+        return [Cancelled(order_id, resting.remaining, CancelReason.USER_REQUESTED)]
+
+    def amend(self, order_id: str, price: int, quantity: int, seq: int) -> list[Event]:
+        """Change a live order's price and total quantity (filled quantity included).
+
+        `seq` is used only when the amend loses queue priority.
+        """
+        if not is_pos_int(price):
+            raise ValueError(f"price must be a positive int, got {price!r}")
+        if not is_pos_int(quantity):
+            raise ValueError(f"quantity must be a positive int, got {quantity!r}")
+
+        resting = self._orders.get(order_id)
+        if resting is None:
+            return [Rejected(order_id, RejectReason.UNKNOWN_ORDER)]
+        filled = resting.order.quantity - resting.remaining
+        if quantity <= filled:
+            return [Rejected(order_id, RejectReason.QUANTITY_BELOW_FILLED)]
+
+        if price == resting.limit_price and quantity < resting.order.quantity:
+            # Keeps its queue position and seq. The book cannot cross as a result.
+            replaced = Replaced(order_id, resting.seq, price, quantity)
+            resting.order = replace(resting.order, quantity=quantity)
+            resting.remaining = quantity - filled
+            return [replaced]
+
+        # Any other amend arrives as a new order. Build the event first: it
+        # validates seq before the book is touched. Remove the old order before
+        # matching so that the id is free and the old entry cannot linger.
+        events: list[Event] = [Replaced(order_id, seq, price, quantity)]
+        self._remove(resting)
+        replacement = replace(resting.order, price=price, quantity=quantity)
+        events.extend(self._process_arriving_order(replacement, seq, quantity - filled))
+        return events
+
+    def _levels(self, side: Side) -> SortedDict[int, _Level]:
+        return self._bids if side is Side.BUY else self._asks
+
+    def _remove(self, resting: RestingOrder) -> None:
+        """Take a resting order off its level and the id index, dropping an emptied level."""
+        del self._orders[resting.order.order_id]
+        levels = self._levels(resting.order.side)
+        level = levels[resting.limit_price]
+        del level[resting.order.order_id]
+        if not level:
+            del levels[resting.limit_price]
+
+    def _process_arriving_order(
+        self, order: Order, seq: int, unfilled: int
+    ) -> list[Event]:
+        """Handle a newly arriving order: a submit, or an amend that loses priority.
+
+        Matches `unfilled` quantity, then rests or cancels what is left.
+        """
+        result = self._match(order, order.price, unfilled)
+        events: list[Event] = list(result.trades)
         remaining = result.remaining
         # A remainder after a self-trade is cancelled whatever the order type.
         # Otherwise a GTC remainder rests and an IOC or market remainder is cancelled.
@@ -84,30 +149,18 @@ class OrderBook:
                 )
         return events
 
-    def cancel(self, order_id: str) -> list[Event]:
-        resting = self._orders.pop(order_id, None)
-        if resting is None:
-            return [Rejected(order_id, RejectReason.UNKNOWN_ORDER)]
-
-        levels = self._levels(resting.order.side)
-        level = levels[resting.limit_price]
-        del level[order_id]
-        if not level:
-            del levels[resting.limit_price]
-        return [Cancelled(order_id, resting.remaining, CancelReason.USER_REQUESTED)]
-
-    def _levels(self, side: Side) -> SortedDict[int, _Level]:
-        return self._bids if side is Side.BUY else self._asks
-
     def _rest(self, resting: RestingOrder) -> None:
         levels = self._levels(resting.order.side)
         level = levels.setdefault(resting.limit_price, OrderedDict())
         level[resting.order.order_id] = resting
         self._orders[resting.order.order_id] = resting
 
-    def _match(self, incoming: Order, limit_price: int | None) -> _MatchResult:
-        """Trade `incoming` against the opposite side while prices cross.
+    def _match(
+        self, incoming: Order, limit_price: int | None, unfilled: int
+    ) -> _MatchResult:
+        """Trade `unfilled` quantity of `incoming` against the opposite side.
 
+        Stops when the quantity is filled or prices stop crossing.
         `limit_price` is None for a market order, which crosses at any price.
         Reduces `remaining` on resting orders and removes filled orders and
         emptied levels. Matching stops at the first resting order from the same
@@ -118,7 +171,7 @@ class OrderBook:
         # Best opposite price: lowest ask for a buy, highest bid for a sell.
         best_index = 0 if side is Side.BUY else -1
         trades: list[Trade] = []
-        remaining = incoming.quantity
+        remaining = unfilled
 
         while remaining > 0 and opposite_levels:
             best_price, level = opposite_levels.peekitem(best_index)
