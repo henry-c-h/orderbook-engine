@@ -5,7 +5,7 @@ Single instrument, single-threaded deterministic core. Everything else (async, A
 ## Representation
 
 - Prices are integer **ticks** (> 0). Quantities are integer **lots** (> 0). No floats anywhere.
-- Ordering uses an engine-assigned monotonically increasing **sequence number** (integer, > 0), never wall-clock time.
+- Ordering uses a monotonically increasing **sequence number** (integer, > 0), never wall-clock time. The sequencer assigns it and passes it in with each command. The engine requires a positive integer and relies on the caller for the increase.
 
 ## Order types
 
