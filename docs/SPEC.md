@@ -12,7 +12,7 @@ Single instrument, single-threaded deterministic core. Everything else (async, A
 - `LIMIT` with `GTC` (rests on the book) or `IOC` (fill what you can now, cancel the rest).
 - `MARKET` (always IOC, no price). Unfilled remainder is cancelled; no liquidity means zero fills and a cancel.
 - Cancel by `order_id`. Unknown or already-filled/cancelled id -> `Rejected`.
-- Amend = **cancel/replace**: same `order_id`, new price/qty, **new sequence number (loses time priority)**. See "Amend rules".
+- Amend = **cancel/replace**: same `order_id`, new price/qty. Loses time priority (new sequence number), except that lowering the quantity at the same price keeps it. See "Amend rules".
 
 ## Matching rules
 
@@ -26,8 +26,9 @@ Single instrument, single-threaded deterministic core. Everything else (async, A
 
 - An amend names a live order by `order_id` and gives a new price and a new **total** quantity. The total includes anything already filled, so the new remaining quantity is the new total minus the quantity already filled.
 - The new total must be greater than the quantity already filled. Otherwise the amend is `Rejected(QUANTITY_BELOW_FILLED)` and the order is untouched.
-- A valid amend is processed as a newly arriving order: the order leaves its queue position, receives a new sequence number and is matched under the normal rules. If the new price crosses the book it trades immediately, and self-trade prevention applies. Any remainder rests as a GTC limit order.
-- Events: `Replaced` first, then any `Trade` or `Cancelled` events produced by matching.
+- **Priority-preserving amend:** if the price is unchanged and the new total is lower than the current total, the order keeps its queue position and its sequence number. Its remaining quantity is reduced in place. No matching takes place, because the book cannot cross as a result.
+- **Any other amend** (new price, or a total that is equal or higher) is processed as a newly arriving order: the order leaves its queue position, receives a new sequence number and is matched under the normal rules. If the new price crosses the book it trades immediately, and self-trade prevention applies. Any remainder rests as a GTC limit order.
+- Events: `Replaced` first, then any `Trade` or `Cancelled` events produced by matching. `Replaced` carries the order's sequence number after the amend: the unchanged original for a priority-preserving amend, the new one otherwise. A priority-preserving amend emits only `Replaced`.
 - Amending an unknown or already filled/cancelled id is `Rejected(UNKNOWN_ORDER)`.
 
 ## Order ids
