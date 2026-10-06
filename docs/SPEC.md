@@ -40,6 +40,8 @@ Single instrument, single-threaded deterministic core. Everything else (async, A
 
 If the incoming order would match a resting order from the **same participant**, stop matching, cancel the incoming order's remaining quantity, and emit no trade for that pair. The resting order is untouched. Fills already executed against other participants earlier in the same sweep stand.
 
+Self-trade prevention supports one mode (cancel newest, keyed by participant). Exchanges may also offer cancel-resting and cancel-both, selectable per order, which are out of scope.
+
 ## Events emitted (the engine's only output)
 
 `Accepted`, `Rejected(reason)`, `Trade`, `Cancelled(reason)`, `Replaced`.
