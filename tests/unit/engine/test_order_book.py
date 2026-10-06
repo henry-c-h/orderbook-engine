@@ -663,6 +663,37 @@ class TestCancel:
         book.cancel("b1")
         assert book.cancel("b1") == [Rejected("b1", RejectReason.UNKNOWN_ORDER)]
 
+    def test_filled_ids_are_rejected(self) -> None:
+        # given s1 and b1 have fully traded against each other
+        book = OrderBook()
+        book.submit(sell("s1", 100, participant_id=P1), seq=1)
+        book.submit(buy("b1", 100, participant_id=P2), seq=2)
+
+        # when the filled resting order and the filled aggressor are cancelled
+        resting_events = book.cancel("s1")
+        aggressor_events = book.cancel("b1")
+
+        # then both are rejected as unknown
+        assert resting_events == [Rejected("s1", RejectReason.UNKNOWN_ORDER)]
+        assert aggressor_events == [Rejected("b1", RejectReason.UNKNOWN_ORDER)]
+        assert_book_consistent(book)
+
+    def test_partly_filled_order_is_cancelled_with_its_remaining_quantity(
+        self,
+    ) -> None:
+        # given a resting sell of 10 at 100 that a buy of 4 has filled
+        book = OrderBook()
+        book.submit(sell("s1", 100, quantity=10, participant_id=P1), seq=1)
+        book.submit(buy("b1", 100, quantity=4, participant_id=P2), seq=2)
+
+        # when the sell is cancelled
+        events = book.cancel("s1")
+
+        # then only the 6 that are left are cancelled, and the book is empty
+        assert events == [Cancelled("s1", 6, CancelReason.USER_REQUESTED)]
+        assert book.best_ask is None
+        assert_book_consistent(book)
+
     def test_cancelled_id_can_be_reused(self) -> None:
         book = OrderBook()
         book.submit(buy("x", 100), seq=1)
@@ -997,6 +1028,70 @@ class TestMatching:
         assert book.best_bid == 99
         assert book.best_ask == 105
         assert_not_crossed(book)
+
+    def test_buy_one_tick_below_the_best_ask_rests(self) -> None:
+        # given a resting sell of 10 at 100
+        book = OrderBook()
+        book.submit(sell("s1", 100, participant_id=P1), seq=1)
+
+        # when a GTC buy at 99 arrives, one tick below the ask
+        incoming = buy("b1", 99, participant_id=P2)
+        events = book.submit(incoming, seq=2)
+
+        # then it does not trade, and it rests
+        assert events == [Accepted(seq=2, order=incoming)]
+        assert book.orders_at(Side.BUY, 99) == ["b1"]
+        assert book.orders_at(Side.SELL, 100) == ["s1"]
+        assert_book_consistent(book)
+
+    def test_sell_one_tick_above_the_best_bid_rests(self) -> None:
+        # given a resting buy of 10 at 100
+        book = OrderBook()
+        book.submit(buy("b1", 100, participant_id=P1), seq=1)
+
+        # when a GTC sell at 101 arrives, one tick above the bid
+        incoming = sell("s1", 101, participant_id=P2)
+        events = book.submit(incoming, seq=2)
+
+        # then it does not trade, and it rests
+        assert events == [Accepted(seq=2, order=incoming)]
+        assert book.orders_at(Side.SELL, 101) == ["s1"]
+        assert book.orders_at(Side.BUY, 100) == ["b1"]
+        assert_book_consistent(book)
+
+    def test_ioc_buy_one_tick_below_the_best_ask_is_cancelled_untraded(self) -> None:
+        # given a resting sell of 10 at 100
+        book = OrderBook()
+        book.submit(sell("s1", 100, participant_id=P1), seq=1)
+
+        # when an IOC buy at 99 arrives, one tick below the ask
+        incoming = buy("b1", 99, participant_id=P2, time_in_force=TimeInForce.IOC)
+        events = book.submit(incoming, seq=2)
+
+        # then it does not trade, and it is cancelled in full
+        assert events == [
+            Accepted(seq=2, order=incoming),
+            Cancelled("b1", 10, CancelReason.IOC_REMAINDER),
+        ]
+        assert book.orders_at(Side.SELL, 100) == ["s1"]
+        assert_book_consistent(book)
+
+    def test_ioc_sell_one_tick_above_the_best_bid_is_cancelled_untraded(self) -> None:
+        # given a resting buy of 10 at 100
+        book = OrderBook()
+        book.submit(buy("b1", 100, participant_id=P1), seq=1)
+
+        # when an IOC sell at 101 arrives, one tick above the bid
+        incoming = sell("s1", 101, participant_id=P2, time_in_force=TimeInForce.IOC)
+        events = book.submit(incoming, seq=2)
+
+        # then it does not trade, and it is cancelled in full
+        assert events == [
+            Accepted(seq=2, order=incoming),
+            Cancelled("s1", 10, CancelReason.IOC_REMAINDER),
+        ]
+        assert book.orders_at(Side.BUY, 100) == ["b1"]
+        assert_book_consistent(book)
 
 
 class TestSelfTradePrevention:
