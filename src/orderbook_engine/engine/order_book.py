@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from dataclasses import dataclass
 
 from sortedcontainers import SortedDict
 
@@ -24,11 +25,18 @@ from orderbook_engine.domain.models import (
 type _Level = OrderedDict[str, RestingOrder]
 
 
+@dataclass(frozen=True, slots=True)
+class _MatchResult:
+    trades: list[Trade]
+    remaining: int  # quantity of the incoming order left unfilled
+    self_trade_prevented: bool  # matching stopped at an order of the same participant
+
+
 class OrderBook:
     """Resting orders for one instrument. Synchronous and deterministic.
 
     Supports GTC limit orders (matching and resting), IOC limit orders, market
-    orders and cancel. Self-trade prevention is not supported yet.
+    orders and cancel, with cancel-newest self-trade prevention.
     """
 
     def __init__(self) -> None:
@@ -56,11 +64,19 @@ class OrderBook:
 
         # Build the event first: it validates seq before the book is touched.
         events: list[Event] = [Accepted(seq=seq, order=order)]
-        trades, remaining = self._match(order, order.price)
-        events.extend(trades)
-        # Rest the remaining quantity if it's a GTC order; otherwise, cancel the remainder.
+        result = self._match(order, order.price)
+        events.extend(result.trades)
+        remaining = result.remaining
+        # A remainder after a self-trade is cancelled whatever the order type.
+        # Otherwise a GTC remainder rests and an IOC or market remainder is cancelled.
         if remaining > 0:
-            if order.time_in_force is TimeInForce.GTC:
+            if result.self_trade_prevented:
+                events.append(
+                    Cancelled(
+                        order.order_id, remaining, CancelReason.SELF_TRADE_PREVENTED
+                    )
+                )
+            elif order.time_in_force is TimeInForce.GTC:
                 self._rest(RestingOrder.from_order(order, seq, remaining))
             else:
                 events.append(
@@ -89,15 +105,13 @@ class OrderBook:
         level[resting.order.order_id] = resting
         self._orders[resting.order.order_id] = resting
 
-    def _match(
-        self, incoming: Order, limit_price: int | None
-    ) -> tuple[list[Trade], int]:
+    def _match(self, incoming: Order, limit_price: int | None) -> _MatchResult:
         """Trade `incoming` against the opposite side while prices cross.
 
         `limit_price` is None for a market order, which crosses at any price.
-        Returns the trades and the quantity left unfilled. Reduces `remaining`
-        on resting orders and removes filled orders and emptied levels. If the
-        self-trade guard fires, the book may be partially mutated.
+        Reduces `remaining` on resting orders and removes filled orders and
+        emptied levels. Matching stops at the first resting order from the same
+        participant: nothing trades with it and it is left untouched.
         """
         side = incoming.side
         opposite_levels = self._levels(side.opposite)
@@ -113,7 +127,7 @@ class OrderBook:
 
             resting = next(iter(level.values()))  # front of the level: oldest
             if resting.order.participant_id == incoming.participant_id:
-                raise NotImplementedError("self-trade prevention is not supported yet")
+                return _MatchResult(trades, remaining, self_trade_prevented=True)
 
             trade_quantity = min(remaining, resting.remaining)
             trades.append(
@@ -138,7 +152,7 @@ class OrderBook:
                 if not level:
                     del opposite_levels[best_price]
 
-        return trades, remaining
+        return _MatchResult(trades, remaining, self_trade_prevented=False)
 
 
 def _crosses(side: Side, limit_price: int | None, resting_price: int) -> bool:

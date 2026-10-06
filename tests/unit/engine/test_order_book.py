@@ -17,8 +17,8 @@ from orderbook_engine.domain.models import (
 )
 from orderbook_engine.engine.order_book import OrderBook
 
-# Matching tests need two different participants (same-participant matches are
-# self-trades, which are not supported yet).
+# Matching tests need two different participants: a match between two orders of
+# the same participant is a self-trade, which is prevented rather than traded.
 P1 = "p1"
 P2 = "p2"
 
@@ -119,6 +119,13 @@ def trade_ids(events: list[Event]) -> list[int]:
 def assert_not_crossed(book: OrderBook) -> None:
     if book.best_bid is not None and book.best_ask is not None:
         assert book.best_bid < book.best_ask
+
+
+def assert_no_self_trades(events: list[Event]) -> None:
+    """No trade has the same participant on both sides."""
+    for event in events:
+        if isinstance(event, Trade):
+            assert event.aggressor_participant_id != event.resting_participant_id
 
 
 class TestBestPrices:
@@ -988,46 +995,248 @@ class TestMatching:
         assert_not_crossed(book)
 
 
-class TestSelfTradeGuard:
-    """Temporary guard: self-trade prevention is not built yet."""
-
-    def test_crossing_same_participant_raises(self) -> None:
-        # given a resting sell from p1
+class TestSelfTradePrevention:
+    def test_self_trade_with_no_prior_trades_cancels_the_whole_order(self) -> None:
+        # given a resting sell of 10 at 100 from p1
         book = OrderBook()
-        book.submit(sell("s1", 100, participant_id=P1), seq=1)
+        own = sell("s1", 100, participant_id=P1)
+        book.submit(own, seq=1)
 
-        # when a crossing buy from p1 arrives, then the guard raises
-        with pytest.raises(NotImplementedError, match="self-trade"):
-            book.submit(buy("b1", 100, participant_id=P1), seq=2)
+        # when a buy of 10 at 100 from p1 arrives
+        incoming = buy("b1", 100, participant_id=P1)
+        events = book.submit(incoming, seq=2)
 
-    def test_guard_checks_every_resting_order_it_would_match(self) -> None:
-        # given a resting sell from p1 at 100, then a resting sell from p2 at 101
+        # then it is accepted and cancelled in full, with no trade
+        assert events == [
+            Accepted(seq=2, order=incoming),
+            Cancelled("b1", 10, CancelReason.SELF_TRADE_PREVENTED),
+        ]
+        assert_no_self_trades(events)
+        assert book.orders_at(Side.SELL, 100) == ["s1"]
+        assert book.best_bid is None
+        assert_no_trace(book, incoming)
+
+        # when a buy from p2 then arrives
+        later = buy("b2", 100, participant_id=P2)
+
+        # then the resting sell is untouched: it trades all 10, as trade 1
+        assert book.submit(later, seq=3) == [
+            Accepted(seq=3, order=later),
+            make_trade(1, 100, 10, later, own),
+        ]
+
+    def test_trades_made_before_the_self_trade_stand(self) -> None:
+        # given resting sells of 4 from p2 and then 10 from p1, both at 100
         book = OrderBook()
-        book.submit(sell("s1", 100, participant_id=P1), seq=1)
-        book.submit(sell("s2", 101, participant_id=P2), seq=2)
+        other = sell("s1", 100, quantity=4, participant_id=P2)
+        own = sell("s2", 100, quantity=10, participant_id=P1)
+        book.submit(other, seq=1)
+        book.submit(own, seq=2)
 
-        # when a buy of 20 from p2 sweeps up to 101, then the guard raises:
-        # s1 is fine, but the sweep then reaches s2, the same participant
-        with pytest.raises(NotImplementedError, match="self-trade"):
-            book.submit(buy("b1", 101, quantity=20, participant_id=P2), seq=3)
+        # when a buy of 10 at 100 from p1 arrives
+        incoming = buy("b1", 100, quantity=10, participant_id=P1)
+        events = book.submit(incoming, seq=3)
 
-    def test_crossing_same_participant_ioc_raises(self) -> None:
-        # given a resting sell from p1
+        # then it trades 4 against p2, then the other 6 are cancelled
+        assert events == [
+            Accepted(seq=3, order=incoming),
+            make_trade(1, 100, 4, incoming, other),
+            Cancelled("b1", 6, CancelReason.SELF_TRADE_PREVENTED),
+        ]
+        assert_no_self_trades(events)
+        assert book.orders_at(Side.SELL, 100) == ["s2"]
+        assert_no_trace(book, incoming)
+
+    def test_self_trade_at_a_worse_price_after_trading_a_better_one(self) -> None:
+        # given a resting sell of 5 at 100 from p2 and of 5 at 101 from p1
         book = OrderBook()
-        book.submit(sell("s1", 100, participant_id=P1), seq=1)
+        other = sell("s1", 100, quantity=5, participant_id=P2)
+        own = sell("s2", 101, quantity=5, participant_id=P1)
+        book.submit(other, seq=1)
+        book.submit(own, seq=2)
 
-        # when a crossing IOC buy from p1 arrives, then the guard raises
-        with pytest.raises(NotImplementedError, match="self-trade"):
-            book.submit(
-                buy("b1", 100, participant_id=P1, time_in_force=TimeInForce.IOC),
-                seq=2,
-            )
+        # when a buy of 15 at 101 from p1 arrives
+        incoming = buy("b1", 101, quantity=15, participant_id=P1)
+        events = book.submit(incoming, seq=3)
 
-    def test_same_participant_market_order_raises(self) -> None:
-        # given a resting sell from p1
+        # then it trades 5 at 100, and the other 10 are cancelled at the self-trade
+        assert events == [
+            Accepted(seq=3, order=incoming),
+            make_trade(1, 100, 5, incoming, other),
+            Cancelled("b1", 10, CancelReason.SELF_TRADE_PREVENTED),
+        ]
+        assert_no_self_trades(events)
+        assert book.best_ask == 101
+        assert book.orders_at(Side.SELL, 101) == ["s2"]
+        assert book.best_bid is None
+
+    def test_gtc_remainder_is_cancelled_and_does_not_rest(self) -> None:
+        # given resting sells of 4 from p2 and then 10 from p1, both at 100
         book = OrderBook()
-        book.submit(sell("s1", 100, participant_id=P1), seq=1)
+        other = sell("s1", 100, quantity=4, participant_id=P2)
+        book.submit(other, seq=1)
+        book.submit(sell("s2", 100, quantity=10, participant_id=P1), seq=2)
 
-        # when a market buy from p1 arrives, then the guard raises
-        with pytest.raises(NotImplementedError, match="self-trade"):
-            book.submit(create_market_order("m1", Side.BUY, participant_id=P1), seq=2)
+        # when a GTC buy of 10 at 105 from p1 arrives, with a limit above the book
+        incoming = buy("b1", 105, quantity=10, participant_id=P1)
+        events = book.submit(incoming, seq=3)
+
+        # then it trades 4, and the 6 left are cancelled rather than rested at 105
+        assert events == [
+            Accepted(seq=3, order=incoming),
+            make_trade(1, 100, 4, incoming, other),
+            Cancelled("b1", 6, CancelReason.SELF_TRADE_PREVENTED),
+        ]
+        assert_no_self_trades(events)
+        assert book.best_bid is None
+        assert_no_trace(book, incoming)
+
+    def test_ioc_reason_is_self_trade_prevented(self) -> None:
+        # given resting sells of 4 from p2 and then 10 from p1, both at 100
+        book = OrderBook()
+        other = sell("s1", 100, quantity=4, participant_id=P2)
+        book.submit(other, seq=1)
+        book.submit(sell("s2", 100, quantity=10, participant_id=P1), seq=2)
+
+        # when an IOC buy of 10 at 100 from p1 arrives
+        incoming = buy(
+            "b1", 100, quantity=10, participant_id=P1, time_in_force=TimeInForce.IOC
+        )
+        events = book.submit(incoming, seq=3)
+
+        # then there is exactly one Cancelled, with the self-trade reason
+        assert events == [
+            Accepted(seq=3, order=incoming),
+            make_trade(1, 100, 4, incoming, other),
+            Cancelled("b1", 6, CancelReason.SELF_TRADE_PREVENTED),
+        ]
+        assert_no_self_trades(events)
+        assert_no_trace(book, incoming)
+
+    def test_market_reason_is_self_trade_prevented(self) -> None:
+        # given resting sells of 4 from p2 and then 10 from p1, both at 100
+        book = OrderBook()
+        other = sell("s1", 100, quantity=4, participant_id=P2)
+        book.submit(other, seq=1)
+        book.submit(sell("s2", 100, quantity=10, participant_id=P1), seq=2)
+
+        # when a market buy of 10 from p1 arrives
+        incoming = create_market_order("m1", Side.BUY, quantity=10, participant_id=P1)
+        events = book.submit(incoming, seq=3)
+
+        # then there is exactly one Cancelled, with the self-trade reason
+        assert events == [
+            Accepted(seq=3, order=incoming),
+            make_trade(1, 100, 4, incoming, other),
+            Cancelled("m1", 6, CancelReason.SELF_TRADE_PREVENTED),
+        ]
+        assert_no_self_trades(events)
+        assert_no_trace(book, incoming)
+
+    def test_sell_side_self_trade_mirrors_the_buy_side(self) -> None:
+        # given resting buys of 4 from p2 and then 10 from p1, both at 100
+        book = OrderBook()
+        other = buy("b1", 100, quantity=4, participant_id=P2)
+        book.submit(other, seq=1)
+        book.submit(buy("b2", 100, quantity=10, participant_id=P1), seq=2)
+
+        # when a GTC sell of 10 at 95 from p1 arrives
+        incoming = sell("s1", 95, quantity=10, participant_id=P1)
+        events = book.submit(incoming, seq=3)
+
+        # then it trades 4, cancels the other 6, and does not rest at 95
+        assert events == [
+            Accepted(seq=3, order=incoming),
+            make_trade(1, 100, 4, incoming, other),
+            Cancelled("s1", 6, CancelReason.SELF_TRADE_PREVENTED),
+        ]
+        assert_no_self_trades(events)
+        assert book.best_ask is None
+        assert book.orders_at(Side.BUY, 100) == ["b2"]
+        assert_no_trace(book, incoming)
+
+    def test_matching_stops_at_the_first_self_trade(self) -> None:
+        # given resting sells at 100 from p1 and then from p2 behind it
+        book = OrderBook()
+        own = sell("s1", 100, quantity=5, participant_id=P1)
+        other = sell("s2", 100, quantity=5, participant_id=P2)
+        book.submit(own, seq=1)
+        book.submit(other, seq=2)
+
+        # when a buy of 5 at 100 from p1 arrives
+        incoming = buy("b1", 100, quantity=5, participant_id=P1)
+        events = book.submit(incoming, seq=3)
+
+        # then it does not skip past s1 to trade with s2: it is cancelled in full
+        assert events == [
+            Accepted(seq=3, order=incoming),
+            Cancelled("b1", 5, CancelReason.SELF_TRADE_PREVENTED),
+        ]
+        assert_no_self_trades(events)
+        assert book.orders_at(Side.SELL, 100) == ["s1", "s2"]
+
+    def test_own_order_behind_the_fill_is_never_reached(self) -> None:
+        # given resting sells at 100 from p2 and then from p1 behind it
+        book = OrderBook()
+        other = sell("s1", 100, quantity=10, participant_id=P2)
+        own = sell("s2", 100, quantity=10, participant_id=P1)
+        book.submit(other, seq=1)
+        book.submit(own, seq=2)
+
+        # when a buy of 10 at 100 from p1 arrives
+        incoming = buy("b1", 100, quantity=10, participant_id=P1)
+        events = book.submit(incoming, seq=3)
+
+        # then it fills against p2 in full, with no Cancelled
+        assert events == [
+            Accepted(seq=3, order=incoming),
+            make_trade(1, 100, 10, incoming, other),
+        ]
+        assert_no_self_trades(events)
+        assert book.orders_at(Side.SELL, 100) == ["s2"]
+        assert_no_trace(book, incoming)
+
+    def test_own_order_that_does_not_cross_is_not_a_self_trade(self) -> None:
+        # given a resting sell at 105 from p1
+        book = OrderBook()
+        book.submit(sell("s1", 105, participant_id=P1), seq=1)
+
+        # when a GTC buy at 100 from p1 arrives, which does not cross
+        incoming = buy("b1", 100, participant_id=P1)
+        events = book.submit(incoming, seq=2)
+
+        # then it rests as normal
+        assert events == [Accepted(seq=2, order=incoming)]
+        assert_no_self_trades(events)
+        assert book.orders_at(Side.BUY, 100) == ["b1"]
+        assert book.best_ask == 105
+        assert_not_crossed(book)
+
+    def test_ioc_that_does_not_cross_own_order_keeps_the_ioc_reason(self) -> None:
+        # given a resting sell at 105 from p1
+        book = OrderBook()
+        book.submit(sell("s1", 105, participant_id=P1), seq=1)
+
+        # when an IOC buy at 100 from p1 arrives, which does not cross
+        incoming = buy("b1", 100, participant_id=P1, time_in_force=TimeInForce.IOC)
+        events = book.submit(incoming, seq=2)
+
+        # then it is cancelled as an IOC remainder, not as a self-trade
+        assert events == [
+            Accepted(seq=2, order=incoming),
+            Cancelled("b1", 10, CancelReason.IOC_REMAINDER),
+        ]
+        assert_no_self_trades(events)
+
+    def test_resting_order_is_still_live_and_cancellable(self) -> None:
+        # given a buy from p1 that was cancelled by hitting p1's own resting sell
+        book = OrderBook()
+        book.submit(sell("s1", 100, quantity=7, participant_id=P1), seq=1)
+        book.submit(buy("b1", 100, participant_id=P1), seq=2)
+
+        # when the resting sell is cancelled by id
+        events = book.cancel("s1")
+
+        # then it is cancelled with its full quantity, and the level is gone
+        assert events == [Cancelled("s1", 7, CancelReason.USER_REQUESTED)]
+        assert book.best_ask is None
