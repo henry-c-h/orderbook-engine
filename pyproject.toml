@@ -35,7 +35,9 @@ extend-select = ["I"]
 venvPath = "."
 venv = ".venv"
 typeCheckingMode = "strict"
+extraPaths = ["src", "tests"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["tests"]
 addopts = ["--import-mode=importlib", "--strict-markers", "--strict-config"]
