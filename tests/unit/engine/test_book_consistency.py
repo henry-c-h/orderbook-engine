@@ -2,6 +2,7 @@ from collections import OrderedDict
 from dataclasses import replace
 
 import pytest
+from builders import limit_order
 from helpers import (
     BookState,
     RestingState,
@@ -14,30 +15,10 @@ from helpers import (
 )
 
 from orderbook_engine.domain.models import (
-    Order,
-    OrderType,
     RestingOrder,
     Side,
 )
 from orderbook_engine.engine.order_book import OrderBook
-
-
-def limit_order(
-    *,
-    order_id: str,
-    side: Side,
-    price: int,
-    participant_id: str = "p1",
-    quantity: int = 10,
-) -> Order:
-    return Order(
-        order_id=order_id,
-        participant_id=participant_id,
-        side=side,
-        order_type=OrderType.LIMIT,
-        quantity=quantity,
-        price=price,
-    )
 
 
 class TestAssertBookConsistent:

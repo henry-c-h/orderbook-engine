@@ -1,6 +1,7 @@
 from typing import Any
 
 import pytest
+from builders import buy, expected_trade, market_order, sell
 from helpers import assert_book_consistent
 
 from orderbook_engine.domain.events import (
@@ -14,7 +15,6 @@ from orderbook_engine.domain.events import (
 )
 from orderbook_engine.domain.models import (
     Order,
-    OrderType,
     Side,
     TimeInForce,
     Trade,
@@ -25,95 +25,6 @@ from orderbook_engine.engine.order_book import OrderBook
 # the same participant is a self-trade, which is prevented rather than traded.
 P1 = "p1"
 P2 = "p2"
-
-
-def limit(
-    order_id: str,
-    side: Side,
-    price: int,
-    *,
-    quantity: int = 10,
-    participant_id: str = "p1",
-    time_in_force: TimeInForce = TimeInForce.GTC,
-) -> Order:
-    return Order(
-        order_id=order_id,
-        participant_id=participant_id,
-        side=side,
-        order_type=OrderType.LIMIT,
-        quantity=quantity,
-        price=price,
-        time_in_force=time_in_force,
-    )
-
-
-def buy(
-    order_id: str,
-    price: int,
-    *,
-    quantity: int = 10,
-    participant_id: str = "p1",
-    time_in_force: TimeInForce = TimeInForce.GTC,
-) -> Order:
-    return limit(
-        order_id,
-        Side.BUY,
-        price,
-        quantity=quantity,
-        participant_id=participant_id,
-        time_in_force=time_in_force,
-    )
-
-
-def sell(
-    order_id: str,
-    price: int,
-    *,
-    quantity: int = 10,
-    participant_id: str = "p1",
-    time_in_force: TimeInForce = TimeInForce.GTC,
-) -> Order:
-    return limit(
-        order_id,
-        Side.SELL,
-        price,
-        quantity=quantity,
-        participant_id=participant_id,
-        time_in_force=time_in_force,
-    )
-
-
-def create_market_order(
-    order_id: str,
-    side: Side,
-    *,
-    quantity: int = 10,
-    participant_id: str = "p1",
-) -> Order:
-    return Order(
-        order_id=order_id,
-        participant_id=participant_id,
-        side=side,
-        order_type=OrderType.MARKET,
-        quantity=quantity,
-        time_in_force=TimeInForce.IOC,
-    )
-
-
-def make_trade(
-    trade_id: int, price: int, quantity: int, aggressor: Order, resting: Order
-) -> Trade:
-    """The Trade we expect when `aggressor` matches against `resting`."""
-    return Trade(
-        trade_id=trade_id,
-        price=price,
-        quantity=quantity,
-        aggressor_order_id=aggressor.order_id,
-        resting_order_id=resting.order_id,
-        aggressor_side=aggressor.side,
-        aggressor_participant_id=aggressor.participant_id,
-        resting_participant_id=resting.participant_id,
-    )
 
 
 def trade_ids(events: list[Event]) -> list[int]:
@@ -210,7 +121,7 @@ class TestIocLimitOrder:
         # then it trades in full and nothing is cancelled
         assert events == [
             Accepted(seq=2, order=incoming),
-            make_trade(1, 100, 10, incoming, resting),
+            expected_trade(1, 100, 10, incoming, resting),
         ]
         assert_no_trace(book, incoming)
         assert_not_crossed(book)
@@ -230,7 +141,7 @@ class TestIocLimitOrder:
         # then it trades 4, the other 6 are cancelled, and nothing rests
         assert events == [
             Accepted(seq=2, order=incoming),
-            make_trade(1, 100, 4, incoming, resting),
+            expected_trade(1, 100, 4, incoming, resting),
             Cancelled("b1", 6, CancelReason.IOC_REMAINDER),
         ]
         assert book.best_bid is None
@@ -292,8 +203,8 @@ class TestIocLimitOrder:
         # and cancels the other 5
         assert events == [
             Accepted(seq=4, order=incoming),
-            make_trade(1, 101, 5, incoming, s1),
-            make_trade(2, 102, 5, incoming, s2),
+            expected_trade(1, 101, 5, incoming, s1),
+            expected_trade(2, 102, 5, incoming, s2),
             Cancelled("b1", 5, CancelReason.IOC_REMAINDER),
         ]
         assert book.best_ask == 103
@@ -320,8 +231,8 @@ class TestIocLimitOrder:
         # and cancels the other 5
         assert events == [
             Accepted(seq=4, order=incoming),
-            make_trade(1, 101, 5, incoming, b1),
-            make_trade(2, 100, 5, incoming, b2),
+            expected_trade(1, 101, 5, incoming, b1),
+            expected_trade(2, 100, 5, incoming, b2),
             Cancelled("s1", 5, CancelReason.IOC_REMAINDER),
         ]
         assert book.best_bid == 99
@@ -354,15 +265,15 @@ class TestMarketOrder:
             book.submit(order, seq=seq)
 
         # when a market buy of 15 arrives
-        incoming = create_market_order("m1", Side.BUY, quantity=15, participant_id=P2)
+        incoming = market_order("m1", Side.BUY, quantity=15, participant_id=P2)
         events = book.submit(incoming, seq=4)
 
         # then it trades at 101, 102, 103, each at the resting price, with no cancel
         assert events == [
             Accepted(seq=4, order=incoming),
-            make_trade(1, 101, 5, incoming, s2),
-            make_trade(2, 102, 5, incoming, s3),
-            make_trade(3, 103, 5, incoming, s1),
+            expected_trade(1, 101, 5, incoming, s2),
+            expected_trade(2, 102, 5, incoming, s3),
+            expected_trade(3, 103, 5, incoming, s1),
         ]
         assert book.best_ask is None
         assert_no_trace(book, incoming)
@@ -377,14 +288,14 @@ class TestMarketOrder:
             book.submit(order, seq=seq)
 
         # when a market buy of 7 arrives
-        incoming = create_market_order("m1", Side.BUY, quantity=7, participant_id=P2)
+        incoming = market_order("m1", Side.BUY, quantity=7, participant_id=P2)
         events = book.submit(incoming, seq=4)
 
         # then it fills s1 and 2 of s2, and s2 keeps the front of the queue
         assert events == [
             Accepted(seq=4, order=incoming),
-            make_trade(1, 100, 5, incoming, s1),
-            make_trade(2, 100, 2, incoming, s2),
+            expected_trade(1, 100, 5, incoming, s1),
+            expected_trade(2, 100, 2, incoming, s2),
         ]
         assert book.orders_at(Side.SELL, 100) == ["s2", "s3"]
 
@@ -398,15 +309,15 @@ class TestMarketOrder:
             book.submit(order, seq=seq)
 
         # when a market sell of 15 arrives
-        incoming = create_market_order("m1", Side.SELL, quantity=15, participant_id=P2)
+        incoming = market_order("m1", Side.SELL, quantity=15, participant_id=P2)
         events = book.submit(incoming, seq=4)
 
         # then it trades at 101, 100, 99, each at the resting price, with no cancel
         assert events == [
             Accepted(seq=4, order=incoming),
-            make_trade(1, 101, 5, incoming, b2),
-            make_trade(2, 100, 5, incoming, b3),
-            make_trade(3, 99, 5, incoming, b1),
+            expected_trade(1, 101, 5, incoming, b2),
+            expected_trade(2, 100, 5, incoming, b3),
+            expected_trade(3, 99, 5, incoming, b1),
         ]
         assert book.best_bid is None
         assert_no_trace(book, incoming)
@@ -420,14 +331,14 @@ class TestMarketOrder:
         book.submit(s2, seq=2)
 
         # when a market buy of 10 arrives
-        incoming = create_market_order("m1", Side.BUY, quantity=10, participant_id=P2)
+        incoming = market_order("m1", Side.BUY, quantity=10, participant_id=P2)
         events = book.submit(incoming, seq=3)
 
         # then it takes all 7 on offer at any price, and cancels the other 3
         assert events == [
             Accepted(seq=3, order=incoming),
-            make_trade(1, 100, 4, incoming, s1),
-            make_trade(2, 200, 3, incoming, s2),
+            expected_trade(1, 100, 4, incoming, s1),
+            expected_trade(2, 200, 3, incoming, s2),
             Cancelled("m1", 3, CancelReason.IOC_REMAINDER),
         ]
         assert book.best_ask is None
@@ -441,13 +352,13 @@ class TestMarketOrder:
         book.submit(b1, seq=1)
 
         # when a market sell of 10 arrives
-        incoming = create_market_order("m1", Side.SELL, quantity=10, participant_id=P2)
+        incoming = market_order("m1", Side.SELL, quantity=10, participant_id=P2)
         events = book.submit(incoming, seq=2)
 
         # then it trades 4 and cancels the other 6
         assert events == [
             Accepted(seq=2, order=incoming),
-            make_trade(1, 100, 4, incoming, b1),
+            expected_trade(1, 100, 4, incoming, b1),
             Cancelled("m1", 6, CancelReason.IOC_REMAINDER),
         ]
         assert book.best_bid is None
@@ -459,7 +370,7 @@ class TestMarketOrder:
         book = OrderBook()
 
         # when a market buy of 10 arrives
-        incoming = create_market_order("m1", Side.BUY, participant_id=P1)
+        incoming = market_order("m1", Side.BUY, participant_id=P1)
         events = book.submit(incoming, seq=1)
 
         # then it is accepted and cancelled in full, with no trades
@@ -476,7 +387,7 @@ class TestMarketOrder:
         book = OrderBook()
 
         # when a market sell of 10 arrives
-        incoming = create_market_order("m1", Side.SELL, participant_id=P1)
+        incoming = market_order("m1", Side.SELL, participant_id=P1)
         events = book.submit(incoming, seq=1)
 
         # then it is accepted and cancelled in full, with no trades
@@ -494,7 +405,7 @@ class TestMarketOrder:
         book.submit(buy("b1", 100, participant_id=P1), seq=1)
 
         # when a market buy of 10 arrives
-        incoming = create_market_order("m1", Side.BUY, participant_id=P2)
+        incoming = market_order("m1", Side.BUY, participant_id=P2)
         events = book.submit(incoming, seq=2)
 
         # then there is nothing to trade against: it is cancelled and b1 is untouched
@@ -510,9 +421,7 @@ class TestMarketOrder:
         book.submit(sell("x", 100, participant_id=P1), seq=1)
 
         # when a market buy that reuses id x arrives
-        events = book.submit(
-            create_market_order("x", Side.BUY, participant_id=P2), seq=2
-        )
+        events = book.submit(market_order("x", Side.BUY, participant_id=P2), seq=2)
 
         # then it is rejected, with no trade and no cancel, and the book is unchanged
         assert events == [Rejected("x", RejectReason.DUPLICATE_ORDER_ID)]
@@ -524,11 +433,11 @@ class TestIocAndMarketAcrossCommands:
         # given an IOC remainder and a market remainder were both cancelled
         book = OrderBook()
         book.submit(buy("i1", 100, time_in_force=TimeInForce.IOC), seq=1)
-        book.submit(create_market_order("m1", Side.SELL), seq=2)
+        book.submit(market_order("m1", Side.SELL), seq=2)
 
         # when the same ids are submitted again
         again_ioc = buy("i1", 100, time_in_force=TimeInForce.IOC)
-        again_market = create_market_order("m1", Side.SELL)
+        again_market = market_order("m1", Side.SELL)
         ioc_events = book.submit(again_ioc, seq=3)
         market_events = book.submit(again_market, seq=4)
 
@@ -553,7 +462,7 @@ class TestIocAndMarketAcrossCommands:
 
         # when an IOC buy or a market buy of 15 arrives, which needs more than the book has
         incoming = (
-            create_market_order("m1", Side.BUY, quantity=15, participant_id=P2)
+            market_order("m1", Side.BUY, quantity=15, participant_id=P2)
             if use_market_order
             else buy(
                 "b1",
@@ -583,7 +492,7 @@ class TestIocAndMarketAcrossCommands:
             seq=6,
         )
         mkt = book.submit(
-            create_market_order("m1", Side.BUY, quantity=10, participant_id=P2), seq=7
+            market_order("m1", Side.BUY, quantity=10, participant_id=P2), seq=7
         )
 
         # then trade ids continue 1, 2, 3, 4 across the three commands
@@ -597,13 +506,11 @@ class TestIocAndMarketAcrossCommands:
 
         # when a market buy arrives with an invalid seq, then it raises
         with pytest.raises(ValueError, match="seq"):
-            book.submit(create_market_order("m1", Side.BUY, participant_id=P2), seq=0)
+            book.submit(market_order("m1", Side.BUY, participant_id=P2), seq=0)
 
         # then the sell is untouched and the next trade id is 1
         assert book.orders_at(Side.SELL, 100) == ["s1"]
-        later = book.submit(
-            create_market_order("m2", Side.BUY, participant_id=P2), seq=2
-        )
+        later = book.submit(market_order("m2", Side.BUY, participant_id=P2), seq=2)
         assert trade_ids(later) == [1]
 
 
@@ -718,7 +625,7 @@ class TestMatching:
         # then one trade fills both orders and the book is empty
         assert events == [
             Accepted(seq=2, order=incoming),
-            make_trade(1, 100, 10, incoming, resting),
+            expected_trade(1, 100, 10, incoming, resting),
         ]
         assert book.best_bid is None
         assert book.best_ask is None
@@ -739,7 +646,7 @@ class TestMatching:
         # then it trades 4 at 100, and its remainder rests at its limit of 105
         assert events == [
             Accepted(seq=2, order=incoming),
-            make_trade(1, 100, 4, incoming, resting),
+            expected_trade(1, 100, 4, incoming, resting),
         ]
         assert book.best_bid == 105
         assert book.orders_at(Side.BUY, 105) == ["b1"]
@@ -761,7 +668,7 @@ class TestMatching:
         # then only 6 trade: b1 has 6 left (10 - 4 filled by s1)
         assert events == [
             Accepted(seq=3, order=later),
-            make_trade(2, 105, 6, later, first),
+            expected_trade(2, 105, 6, later, first),
         ]
         assert book.best_bid is None
         assert_not_crossed(book)
@@ -783,7 +690,7 @@ class TestMatching:
         # then it trades 4 against s1, which keeps the front of the queue
         assert first_events == [
             Accepted(seq=3, order=first),
-            make_trade(1, 100, 4, first, s1),
+            expected_trade(1, 100, 4, first, s1),
         ]
         assert book.orders_at(Side.SELL, 100) == ["s1", "s2"]
 
@@ -794,7 +701,7 @@ class TestMatching:
         # then it trades 6 against s1 (6 left), before s2 is touched
         assert second_events == [
             Accepted(seq=4, order=second),
-            make_trade(2, 100, 6, second, s1),
+            expected_trade(2, 100, 6, second, s1),
         ]
         assert book.orders_at(Side.SELL, 100) == ["s2"]
         assert_not_crossed(book)
@@ -816,9 +723,9 @@ class TestMatching:
         # then it trades at 101, 102, 103: lowest price first, and the book is empty
         assert events == [
             Accepted(seq=4, order=incoming),
-            make_trade(1, 101, 5, incoming, s2),
-            make_trade(2, 102, 5, incoming, s3),
-            make_trade(3, 103, 5, incoming, s1),
+            expected_trade(1, 101, 5, incoming, s2),
+            expected_trade(2, 102, 5, incoming, s3),
+            expected_trade(3, 103, 5, incoming, s1),
         ]
         assert book.best_ask is None
         assert book.best_bid is None
@@ -841,9 +748,9 @@ class TestMatching:
         # then it trades at 101, 100, 99: highest price first, and the book is empty
         assert events == [
             Accepted(seq=4, order=incoming),
-            make_trade(1, 101, 5, incoming, b2),
-            make_trade(2, 100, 5, incoming, b3),
-            make_trade(3, 99, 5, incoming, b1),
+            expected_trade(1, 101, 5, incoming, b2),
+            expected_trade(2, 100, 5, incoming, b3),
+            expected_trade(3, 99, 5, incoming, b1),
         ]
         assert book.best_bid is None
         assert book.best_ask is None
@@ -865,8 +772,8 @@ class TestMatching:
         # then it trades at 101 and 102 only, and its remainder rests at 102
         assert events == [
             Accepted(seq=4, order=incoming),
-            make_trade(1, 101, 5, incoming, s1),
-            make_trade(2, 102, 5, incoming, s2),
+            expected_trade(1, 101, 5, incoming, s1),
+            expected_trade(2, 102, 5, incoming, s2),
         ]
         assert book.best_bid == 102
         assert book.best_ask == 103  # s3 is out of reach and untouched
@@ -888,8 +795,8 @@ class TestMatching:
         # then it fills s1 and then s2, and only s3 is left
         assert events == [
             Accepted(seq=4, order=incoming),
-            make_trade(1, 100, 5, incoming, s1),
-            make_trade(2, 100, 5, incoming, s2),
+            expected_trade(1, 100, 5, incoming, s1),
+            expected_trade(2, 100, 5, incoming, s2),
         ]
         assert book.orders_at(Side.SELL, 100) == ["s3"]
         assert_not_crossed(book)
@@ -906,7 +813,7 @@ class TestMatching:
 
         # then the trade price is 100 (the resting price), not 105
         # and the book is not crossed
-        assert events[1] == make_trade(1, 100, 10, incoming, resting)
+        assert events[1] == expected_trade(1, 100, 10, incoming, resting)
         assert_not_crossed(book)
 
     def test_sell_trades_at_the_resting_bids_price(self) -> None:
@@ -921,7 +828,7 @@ class TestMatching:
 
         # then the trade price is 100 (the resting price), not 95
         # and the book is not crossed
-        assert events[1] == make_trade(1, 100, 10, incoming, resting)
+        assert events[1] == expected_trade(1, 100, 10, incoming, resting)
         assert_not_crossed(book)
 
     def test_trade_ids_count_up_across_commands(self) -> None:
@@ -1121,7 +1028,7 @@ class TestSelfTradePrevention:
         # then the resting sell is untouched: it trades all 10, as trade 1
         assert book.submit(later, seq=3) == [
             Accepted(seq=3, order=later),
-            make_trade(1, 100, 10, later, own),
+            expected_trade(1, 100, 10, later, own),
         ]
 
     def test_trades_made_before_the_self_trade_stand(self) -> None:
@@ -1139,7 +1046,7 @@ class TestSelfTradePrevention:
         # then it trades 4 against p2, then the other 6 are cancelled
         assert events == [
             Accepted(seq=3, order=incoming),
-            make_trade(1, 100, 4, incoming, other),
+            expected_trade(1, 100, 4, incoming, other),
             Cancelled("b1", 6, CancelReason.SELF_TRADE_PREVENTED),
         ]
         assert_no_self_trades(events)
@@ -1161,7 +1068,7 @@ class TestSelfTradePrevention:
         # then it trades 5 at 100, and the other 10 are cancelled at the self-trade
         assert events == [
             Accepted(seq=3, order=incoming),
-            make_trade(1, 100, 5, incoming, other),
+            expected_trade(1, 100, 5, incoming, other),
             Cancelled("b1", 10, CancelReason.SELF_TRADE_PREVENTED),
         ]
         assert_no_self_trades(events)
@@ -1183,7 +1090,7 @@ class TestSelfTradePrevention:
         # then it trades 4, and the 6 left are cancelled rather than rested at 105
         assert events == [
             Accepted(seq=3, order=incoming),
-            make_trade(1, 100, 4, incoming, other),
+            expected_trade(1, 100, 4, incoming, other),
             Cancelled("b1", 6, CancelReason.SELF_TRADE_PREVENTED),
         ]
         assert_no_self_trades(events)
@@ -1206,7 +1113,7 @@ class TestSelfTradePrevention:
         # then there is exactly one Cancelled, with the self-trade reason
         assert events == [
             Accepted(seq=3, order=incoming),
-            make_trade(1, 100, 4, incoming, other),
+            expected_trade(1, 100, 4, incoming, other),
             Cancelled("b1", 6, CancelReason.SELF_TRADE_PREVENTED),
         ]
         assert_no_self_trades(events)
@@ -1220,13 +1127,13 @@ class TestSelfTradePrevention:
         book.submit(sell("s2", 100, quantity=10, participant_id=P1), seq=2)
 
         # when a market buy of 10 from p1 arrives
-        incoming = create_market_order("m1", Side.BUY, quantity=10, participant_id=P1)
+        incoming = market_order("m1", Side.BUY, quantity=10, participant_id=P1)
         events = book.submit(incoming, seq=3)
 
         # then there is exactly one Cancelled, with the self-trade reason
         assert events == [
             Accepted(seq=3, order=incoming),
-            make_trade(1, 100, 4, incoming, other),
+            expected_trade(1, 100, 4, incoming, other),
             Cancelled("m1", 6, CancelReason.SELF_TRADE_PREVENTED),
         ]
         assert_no_self_trades(events)
@@ -1246,7 +1153,7 @@ class TestSelfTradePrevention:
         # then it trades 4, cancels the other 6, and does not rest at 95
         assert events == [
             Accepted(seq=3, order=incoming),
-            make_trade(1, 100, 4, incoming, other),
+            expected_trade(1, 100, 4, incoming, other),
             Cancelled("s1", 6, CancelReason.SELF_TRADE_PREVENTED),
         ]
         assert_no_self_trades(events)
@@ -1289,7 +1196,7 @@ class TestSelfTradePrevention:
         # then it fills against p2 in full, with no Cancelled
         assert events == [
             Accepted(seq=3, order=incoming),
-            make_trade(1, 100, 10, incoming, other),
+            expected_trade(1, 100, 10, incoming, other),
         ]
         assert_no_self_trades(events)
         assert book.orders_at(Side.SELL, 100) == ["s2"]
@@ -1400,13 +1307,13 @@ class TestAmendRejections:
         assert_book_consistent(book)
 
         # when a market buy of 10 arrives
-        incoming = create_market_order("m1", Side.BUY, quantity=10, participant_id=P2)
+        incoming = market_order("m1", Side.BUY, quantity=10, participant_id=P2)
         fills = book.submit(incoming, seq=4)
 
         # then s1 still has its 6 left
         assert fills == [
             Accepted(seq=4, order=incoming),
-            make_trade(2, 100, 6, incoming, resting),
+            expected_trade(2, 100, 6, incoming, resting),
             Cancelled("m1", 4, CancelReason.IOC_REMAINDER),
         ]
         assert_book_consistent(book)
@@ -1473,14 +1380,14 @@ class TestAmendKeepingPriority:
         assert_book_consistent(book)
 
         # when a market buy of 10 arrives
-        incoming = create_market_order("m1", Side.BUY, quantity=10, participant_id=P2)
+        incoming = market_order("m1", Side.BUY, quantity=10, participant_id=P2)
         fills = book.submit(incoming, seq=5)
 
         # then s1 fills first, with its reduced 6, and then 4 of s2
         assert fills == [
             Accepted(seq=5, order=incoming),
-            make_trade(1, 100, 6, incoming, s1),
-            make_trade(2, 100, 4, incoming, s2),
+            expected_trade(1, 100, 6, incoming, s1),
+            expected_trade(2, 100, 4, incoming, s2),
         ]
         assert book.orders_at(Side.SELL, 100) == ["s2", "s3"]
         assert_book_consistent(book)
@@ -1502,13 +1409,13 @@ class TestAmendKeepingPriority:
         assert_book_consistent(book)
 
         # when a market buy of 10 arrives
-        incoming = create_market_order("m1", Side.BUY, quantity=10, participant_id=P2)
+        incoming = market_order("m1", Side.BUY, quantity=10, participant_id=P2)
         fills = book.submit(incoming, seq=4)
 
         # then s1 has 4 left (8 total - 4 filled), and the other 6 are cancelled
         assert fills == [
             Accepted(seq=4, order=incoming),
-            make_trade(2, 100, 4, incoming, resting),
+            expected_trade(2, 100, 4, incoming, resting),
             Cancelled("m1", 6, CancelReason.IOC_REMAINDER),
         ]
         assert_book_consistent(book)
@@ -1532,14 +1439,14 @@ class TestAmendLosingPriority:
         assert_book_consistent(book)
 
         # when a market buy of 25 arrives
-        incoming = create_market_order("m1", Side.BUY, quantity=25, participant_id=P2)
+        incoming = market_order("m1", Side.BUY, quantity=25, participant_id=P2)
         fills = book.submit(incoming, seq=4)
 
         # then s2 fills first, then s1 with its new total of 15
         assert fills == [
             Accepted(seq=4, order=incoming),
-            make_trade(1, 100, 10, incoming, s2),
-            make_trade(2, 100, 15, incoming, s1),
+            expected_trade(1, 100, 10, incoming, s2),
+            expected_trade(2, 100, 15, incoming, s1),
         ]
         assert_book_consistent(book)
 
@@ -1604,8 +1511,8 @@ class TestAmendLosingPriority:
         # then Replaced comes first, then trades at the resting prices 101 and 102
         assert events == [
             Replaced("b1", seq=4, new_price=102, new_total_quantity=20),
-            make_trade(1, 101, 5, b1, s1),
-            make_trade(2, 102, 5, b1, s2),
+            expected_trade(1, 101, 5, b1, s1),
+            expected_trade(2, 102, 5, b1, s2),
         ]
         # and the other 10 rest at the new price, with the old level gone
         assert book.best_bid == 102
@@ -1615,13 +1522,13 @@ class TestAmendLosingPriority:
         assert_book_consistent(book)
 
         # when a market sell of 20 from p1 arrives
-        incoming = create_market_order("m1", Side.SELL, quantity=20, participant_id=P1)
+        incoming = market_order("m1", Side.SELL, quantity=20, participant_id=P1)
         fills = book.submit(incoming, seq=5)
 
         # then b1 has exactly 10 left, and the other 10 are cancelled
         assert fills == [
             Accepted(seq=5, order=incoming),
-            make_trade(3, 102, 10, incoming, b1),
+            expected_trade(3, 102, 10, incoming, b1),
             Cancelled("m1", 10, CancelReason.IOC_REMAINDER),
         ]
         assert_book_consistent(book)
@@ -1640,7 +1547,7 @@ class TestAmendLosingPriority:
         # then it trades at the resting bid's price of 100, not at 95
         assert events == [
             Replaced("s1", seq=3, new_price=95, new_total_quantity=10),
-            make_trade(1, 100, 10, s1, b1),
+            expected_trade(1, 100, 10, s1, b1),
         ]
         assert book.best_bid is None
         assert book.best_ask is None
@@ -1662,19 +1569,19 @@ class TestAmendLosingPriority:
         # then it trades 5, and 11 rest (20 total - 4 filled - 5 traded now)
         assert events == [
             Replaced("b1", seq=4, new_price=101, new_total_quantity=20),
-            make_trade(2, 101, 5, b1, s2),
+            expected_trade(2, 101, 5, b1, s2),
         ]
         assert book.orders_at(Side.BUY, 101) == ["b1"]
         assert_book_consistent(book)
 
         # when a market sell of 20 from p1 arrives
-        incoming = create_market_order("m1", Side.SELL, quantity=20, participant_id=P1)
+        incoming = market_order("m1", Side.SELL, quantity=20, participant_id=P1)
         fills = book.submit(incoming, seq=5)
 
         # then b1 has exactly 11 left
         assert fills == [
             Accepted(seq=5, order=incoming),
-            make_trade(3, 101, 11, incoming, b1),
+            expected_trade(3, 101, 11, incoming, b1),
             Cancelled("m1", 9, CancelReason.IOC_REMAINDER),
         ]
         assert_book_consistent(book)
@@ -1693,7 +1600,7 @@ class TestAmendLosingPriority:
         # then it fills in full, and neither the level nor the id remains
         assert events == [
             Replaced("b1", seq=3, new_price=100, new_total_quantity=10),
-            make_trade(1, 100, 10, b1, s1),
+            expected_trade(1, 100, 10, b1, s1),
         ]
         assert book.best_bid is None
         assert book.best_ask is None
@@ -1726,13 +1633,13 @@ class TestRepeatedAmends:
         assert second == [Replaced("s1", seq=1, new_price=100, new_total_quantity=5)]
 
         # when a market buy of 10 arrives
-        incoming = create_market_order("m1", Side.BUY, quantity=10, participant_id=P2)
+        incoming = market_order("m1", Side.BUY, quantity=10, participant_id=P2)
         fills = book.submit(incoming, seq=6)
 
         # then s1 has 1 left (5 total - 4 filled)
         assert fills == [
             Accepted(seq=6, order=incoming),
-            make_trade(2, 100, 1, incoming, resting),
+            expected_trade(2, 100, 1, incoming, resting),
             Cancelled("m1", 9, CancelReason.IOC_REMAINDER),
         ]
         assert_book_consistent(book)
@@ -1757,14 +1664,14 @@ class TestRepeatedAmends:
         assert_book_consistent(book)
 
         # when a market buy of 10 arrives
-        incoming = create_market_order("m1", Side.BUY, quantity=10, participant_id=P2)
+        incoming = market_order("m1", Side.BUY, quantity=10, participant_id=P2)
         fills = book.submit(incoming, seq=6)
 
         # then s1 fills with 6, and s2 with 4
         assert fills == [
             Accepted(seq=6, order=incoming),
-            make_trade(1, 100, 6, incoming, s1),
-            make_trade(2, 100, 4, incoming, s2),
+            expected_trade(1, 100, 6, incoming, s1),
+            expected_trade(2, 100, 4, incoming, s2),
         ]
         assert_book_consistent(book)
 
@@ -1790,14 +1697,14 @@ class TestRepeatedAmends:
         assert_book_consistent(book)
 
         # when a market buy of 18 arrives
-        incoming = create_market_order("m1", Side.BUY, quantity=18, participant_id=P2)
+        incoming = market_order("m1", Side.BUY, quantity=18, participant_id=P2)
         fills = book.submit(incoming, seq=5)
 
         # then s2 fills first, then s1 with 8
         assert fills == [
             Accepted(seq=5, order=incoming),
-            make_trade(1, 100, 10, incoming, s2),
-            make_trade(2, 100, 8, incoming, s1),
+            expected_trade(1, 100, 10, incoming, s2),
+            expected_trade(2, 100, 8, incoming, s1),
         ]
         assert_book_consistent(book)
 
@@ -1822,14 +1729,14 @@ class TestRepeatedAmends:
         assert_book_consistent(book)
 
         # when a market buy of 22 arrives
-        incoming = create_market_order("m1", Side.BUY, quantity=22, participant_id=P2)
+        incoming = market_order("m1", Side.BUY, quantity=22, participant_id=P2)
         fills = book.submit(incoming, seq=5)
 
         # then s2 fills first, then s1 with 12
         assert fills == [
             Accepted(seq=5, order=incoming),
-            make_trade(1, 100, 10, incoming, s2),
-            make_trade(2, 100, 12, incoming, s1),
+            expected_trade(1, 100, 10, incoming, s2),
+            expected_trade(2, 100, 12, incoming, s1),
         ]
         assert_book_consistent(book)
 
@@ -1860,13 +1767,13 @@ class TestRepeatedAmends:
         assert_book_consistent(book)
 
         # when a market buy of 10 arrives
-        incoming = create_market_order("m1", Side.BUY, quantity=10, participant_id=P2)
+        incoming = market_order("m1", Side.BUY, quantity=10, participant_id=P2)
         fills = book.submit(incoming, seq=6)
 
         # then s1 has 1 left (9 total - 8 filled)
         assert fills == [
             Accepted(seq=6, order=incoming),
-            make_trade(2, 101, 1, incoming, resting),
+            expected_trade(2, 101, 1, incoming, resting),
             Cancelled("m1", 9, CancelReason.IOC_REMAINDER),
         ]
         assert_book_consistent(book)
@@ -1912,7 +1819,7 @@ class TestAmendSelfTradePrevention:
         # then it trades 4 against p2, and the other 6 are cancelled at the self-trade
         assert events == [
             Replaced("b1", seq=4, new_price=101, new_total_quantity=10),
-            make_trade(1, 101, 4, b1, other),
+            expected_trade(1, 101, 4, b1, other),
             Cancelled("b1", 6, CancelReason.SELF_TRADE_PREVENTED),
         ]
         assert_no_self_trades(events)
