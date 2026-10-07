@@ -61,6 +61,19 @@ def _allowed_rejections(command: Command) -> set[RejectReason]:
             return {RejectReason.UNKNOWN_ORDER, RejectReason.QUANTITY_BELOW_FILLED}
 
 
+def _allowed_cancel_reasons(command: Command) -> set[CancelReason]:
+    match command:
+        case Submit():
+            return {CancelReason.IOC_REMAINDER, CancelReason.SELF_TRADE_PREVENTED}
+        case Cancel():
+            return {CancelReason.USER_REQUESTED}
+        case Amend():
+            # Only a resting order can be amended, and that is always GTC, so what
+            # is left after matching rests again or is cancelled by self-trade
+            # prevention. It is never an IOC remainder.
+            return {CancelReason.SELF_TRADE_PREVENTED}
+
+
 def _trades(events: list[Event]) -> list[Trade]:
     return [event for event in events if isinstance(event, Trade)]
 
@@ -293,7 +306,7 @@ def _assert_event_order(step: Step) -> None:
         assert len(events) == 1
         assert isinstance(first, Cancelled)
         assert first.order_id == order_id
-        assert first.reason is CancelReason.USER_REQUESTED
+        assert first.reason in _allowed_cancel_reasons(step.command)
         return
 
     if isinstance(step.command, Submit):
@@ -311,10 +324,7 @@ def _assert_event_order(step: Step) -> None:
     for event in tail:
         assert isinstance(event, Cancelled)
         assert event.order_id == order_id
-        assert event.reason in {
-            CancelReason.IOC_REMAINDER,
-            CancelReason.SELF_TRADE_PREVENTED,
-        }
+        assert event.reason in _allowed_cancel_reasons(step.command)
 
 
 class TestRestingRules:
