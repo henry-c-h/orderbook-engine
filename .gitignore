@@ -9,6 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
+# Hypothesis example database
+.hypothesis/
+
 # Local claude instructions
 CLAUDE.local.md
 .claude/settings.local.json
