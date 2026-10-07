@@ -53,7 +53,10 @@ class Cancelled:
 
 @dataclass(frozen=True, slots=True)
 class Replaced:
-    """Cancel/replace: same order_id, new price and total quantity, new `seq`.
+    """Cancel/replace: same order_id, new price and total quantity.
+
+    `seq` is the order's seq after the amend: the original for an amend that
+    keeps its queue position, a new one otherwise.
 
     `new_total_quantity` includes anything already filled. A replica derives
     the remaining quantity as total minus the filled quantity from the trades
