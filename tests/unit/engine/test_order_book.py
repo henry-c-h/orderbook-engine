@@ -2,7 +2,7 @@ from typing import Any
 
 import pytest
 from builders import buy, expected_trade, market_order, sell
-from helpers import assert_book_consistent
+from helpers import assert_book_consistent, assert_not_crossed
 
 from orderbook_engine.domain.events import (
     Accepted,
@@ -29,11 +29,6 @@ P2 = "p2"
 
 def trade_ids(events: list[Event]) -> list[int]:
     return [e.trade_id for e in events if isinstance(e, Trade)]
-
-
-def assert_not_crossed(book: OrderBook) -> None:
-    if book.best_bid is not None and book.best_ask is not None:
-        assert book.best_bid < book.best_ask
 
 
 def assert_no_self_trades(events: list[Event]) -> None:
