@@ -12,6 +12,7 @@ from helpers import BookState, book_state
 from hypothesis import event
 from hypothesis import strategies as st
 
+from orderbook_engine.domain.commands import Amend, Cancel, Command, Submit
 from orderbook_engine.domain.events import (
     Accepted,
     Cancelled,
@@ -28,26 +29,6 @@ from orderbook_engine.domain.models import (
     Trade,
 )
 from orderbook_engine.engine.order_book import OrderBook
-
-
-@dataclass(frozen=True, slots=True)
-class Submit:
-    order: Order
-
-
-@dataclass(frozen=True, slots=True)
-class Cancel:
-    order_id: str
-
-
-@dataclass(frozen=True, slots=True)
-class Amend:
-    order_id: str
-    price: int
-    quantity: int
-
-
-type Command = Submit | Cancel | Amend
 
 _PRICES = st.integers(min_value=95, max_value=105)
 _QUANTITIES = st.integers(min_value=1, max_value=10)
