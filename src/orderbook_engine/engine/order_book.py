@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 
 from sortedcontainers import SortedDict
@@ -21,6 +22,11 @@ from orderbook_engine.domain.models import (
     TimeInForce,
     Trade,
     is_pos_int,
+)
+from orderbook_engine.engine.snapshot import (
+    BookSnapshot,
+    LevelSnapshot,
+    OrderSnapshot,
 )
 
 # Orders at one price, in arrival order (= time priority).
@@ -59,6 +65,14 @@ class OrderBook:
         """Order ids at one price level, in priority order."""
         level = self._levels(side).get(price)
         return list(level) if level else []
+
+    def snapshot(self) -> BookSnapshot:
+        """A read-only copy of every resting order and the trade counter."""
+        return BookSnapshot(
+            bids=_level_snapshots(reversed(self._bids.items())),
+            asks=_level_snapshots(self._asks.items()),
+            next_trade_id=self._next_trade_id,
+        )
 
     def submit(self, order: Order, seq: int) -> list[Event]:
         if order.order_id in self._orders:
@@ -206,6 +220,28 @@ class OrderBook:
                     del opposite_levels[best_price]
 
         return _MatchResult(trades, remaining, self_trade_prevented=False)
+
+
+def _level_snapshots(
+    levels: Iterable[tuple[int, _Level]],
+) -> tuple[LevelSnapshot, ...]:
+    """Copy price levels in the order given, each level in priority order."""
+    return tuple(
+        LevelSnapshot(
+            price=price,
+            orders=tuple(
+                OrderSnapshot(
+                    order_id=order_id,
+                    participant_id=resting.order.participant_id,
+                    seq=resting.seq,
+                    total_quantity=resting.order.quantity,
+                    remaining=resting.remaining,
+                )
+                for order_id, resting in level.items()
+            ),
+        )
+        for price, level in levels
+    )
 
 
 def _crosses(side: Side, limit_price: int | None, resting_price: int) -> bool:

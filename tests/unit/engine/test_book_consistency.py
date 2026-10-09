@@ -302,12 +302,26 @@ class TestBookState:
                     side=Side.BUY,
                     price=99,
                     seq=1,
+                    total_quantity=10,
                     remaining=6,
                 ),
             ),
             asks=(),
             next_trade_id=2,
         )
+
+    def test_resting_order_reports_its_total_after_an_amend(self) -> None:
+        # given a bid of 10 that is amended down to a total of 7
+        book = OrderBook()
+        book.submit(limit_order(order_id="b1", side=Side.BUY, price=99), seq=1)
+        book.amend("b1", price=99, quantity=7, seq=2)
+
+        # when the state is read
+        state = book_state(book)
+
+        # then the bid shows a total quantity of 7 and 7 remaining
+        assert state.orders["b1"].total_quantity == 7
+        assert state.orders["b1"].remaining == 7
 
     def test_orders_lookup_is_keyed_by_order_id(self) -> None:
         # given a bid and an ask

@@ -1,3 +1,10 @@
+"""Test helpers that read the book's private state directly.
+
+This is deliberate, and the one place tests look inside the book: it keeps the
+invariant checks independent of `OrderBook.snapshot()`, so that a mistake in
+the snapshot cannot hide a mistake in the book.
+"""
+
 from collections import OrderedDict
 from dataclasses import dataclass
 
@@ -5,8 +12,6 @@ from sortedcontainers import SortedDict
 
 from orderbook_engine.domain.models import RestingOrder, Side
 from orderbook_engine.engine.order_book import OrderBook
-
-# This module is the one place tests look inside the book's private state.
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +23,7 @@ class RestingState:
     side: Side
     price: int
     seq: int
+    total_quantity: int
     remaining: int
 
 
@@ -62,6 +68,7 @@ def _resting_states(
             side=resting.order.side,
             price=price,
             seq=resting.seq,
+            total_quantity=resting.order.quantity,
             remaining=resting.remaining,
         )
         for price, level in priced_levels
