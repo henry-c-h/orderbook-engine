@@ -4,22 +4,11 @@ import tempfile
 from pathlib import Path
 
 from hypothesis import given
-from strategies import command_logs
+from strategies import command_logs, records_for
 
 from orderbook_engine.adapters.file_log import FileLog
-from orderbook_engine.app.log_record import LogRecord, decode_record, encode_record
+from orderbook_engine.app.log_record import decode_record, encode_record
 from orderbook_engine.domain.commands import Command
-from orderbook_engine.engine.order_book import OrderBook
-from orderbook_engine.replay.replay import apply_command
-
-
-def records_for(commands: list[Command]) -> list[LogRecord]:
-    """The records the sequencer would write: one per command, seq 1, 2, 3, ..."""
-    book = OrderBook()
-    return [
-        LogRecord(seq, command, tuple(apply_command(book, command, seq)))
-        for seq, command in enumerate(commands, start=1)
-    ]
 
 
 class TestCodecProperties:

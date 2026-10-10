@@ -43,7 +43,7 @@ from orderbook_engine.domain.models import (
 
 
 class LogFormatError(Exception):
-    """Bytes that are not a valid log record, or a log file that is not intact."""
+    """Bytes that are not a valid log record."""
 
 
 @dataclass(frozen=True, slots=True)

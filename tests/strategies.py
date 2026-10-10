@@ -12,6 +12,7 @@ from helpers import BookState, book_state
 from hypothesis import event
 from hypothesis import strategies as st
 
+from orderbook_engine.app.log_record import LogRecord
 from orderbook_engine.domain.commands import Amend, Cancel, Command, Submit
 from orderbook_engine.domain.events import (
     Accepted,
@@ -96,6 +97,19 @@ def apply(book: OrderBook, command: Command, seq: int) -> list[Event]:
             return book.cancel(order_id)
         case Amend(order_id=order_id, price=price, quantity=quantity):
             return book.amend(order_id, price, quantity, seq)
+
+
+def records_for(commands: Sequence[Command]) -> list[LogRecord]:
+    """The records a sequencer would write: one per command, seq 1, 2, 3, ...
+
+    Built with `apply`, not with the replay package, so that tests of recovery
+    compare the engine against an independent run.
+    """
+    book = OrderBook()
+    return [
+        LogRecord(seq, command, tuple(apply(book, command, seq)))
+        for seq, command in enumerate(commands, start=1)
+    ]
 
 
 @st.composite
