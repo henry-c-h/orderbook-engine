@@ -32,7 +32,7 @@ Run all three before every commit.
   fails, fix the cause and commit again.
 - Format: `type: subject` or `type(scope): subject`. Scope is optional; use
   it only when the change sits clearly inside one of: domain, engine, app,
-  api, replay, ui.
+  api, replay, ui, adapters.
 - Types: feat (new behaviour), fix (bug fix), test (tests only),
   refactor (no behaviour change), perf, docs, build (deps, packaging),
   ci, chore (everything else).
