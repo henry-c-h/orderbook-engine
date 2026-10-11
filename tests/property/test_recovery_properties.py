@@ -18,7 +18,7 @@ HEADER_SIZE = 8
 
 class TestRecoveryProperties:
     @given(commands=command_logs)
-    def test_the_recovered_book_has_the_checksum_of_the_replayed_book(
+    def test_recovering_from_records_agrees_with_replaying_the_commands(
         self, commands: list[Command]
     ) -> None:
         # given the records of a random sequence of commands
@@ -28,8 +28,11 @@ class TestRecoveryProperties:
         recovered = recover_book(records)
         replayed = replay(commands)
 
-        # then the checksums of the two books are equal, and the next seq
-        # follows the last command
+        # then replay produces the events the records hold, the checksums of
+        # the two books are equal, and the next seq follows the last command
+        assert replayed.events == [
+            event for record in records for event in record.events
+        ]
         assert state_checksum(recovered.book.snapshot()) == state_checksum(
             replayed.book.snapshot()
         )
