@@ -7,16 +7,12 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from builders import buy, sell
+from builders import buy, sell, three_records
 from strategies import records_for
 
 from orderbook_engine.adapters import file_log
-from orderbook_engine.adapters.file_log import (
-    MAX_PAYLOAD_SIZE,
-    CorruptLogError,
-    FileLog,
-    LogFailedError,
-)
+from orderbook_engine.adapters.file_log import MAX_PAYLOAD_SIZE, FileLog
+from orderbook_engine.app.event_log import CorruptLogError, LogFailedError
 from orderbook_engine.app.log_record import (
     LogRecord,
     decode_record,
@@ -38,17 +34,6 @@ def six_commands() -> list[Command]:
         Cancel("nope"),
         Amend("b1", 98, 12),
     ]
-
-
-def three_records() -> list[LogRecord]:
-    """A rest, a trade and a rejected cancel."""
-    return records_for(
-        [
-            Submit(buy("b1", 100, participant_id="p1")),
-            Submit(sell("s1", 100, quantity=4, participant_id="p2")),
-            Cancel("nope"),
-        ]
-    )
 
 
 def record_with_payload_size(size: int) -> LogRecord:

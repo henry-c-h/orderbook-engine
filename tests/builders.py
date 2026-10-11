@@ -1,4 +1,4 @@
-"""Builders for the orders and trades that tests need.
+"""Builders for the orders, trades and log records that tests need.
 
 Each builder gives a valid object with sensible defaults, so that a test names
 only the fields it cares about.
@@ -6,6 +6,10 @@ only the fields it cares about.
 
 from typing import Any
 
+from strategies import records_for
+
+from orderbook_engine.app.log_record import LogRecord
+from orderbook_engine.domain.commands import Cancel, Submit
 from orderbook_engine.domain.models import (
     Order,
     OrderType,
@@ -140,4 +144,15 @@ def expected_trade(
         aggressor_side=aggressor.side,
         aggressor_participant_id=aggressor.participant_id,
         resting_participant_id=resting.participant_id,
+    )
+
+
+def three_records() -> list[LogRecord]:
+    """A rest, a trade and a rejected cancel, as records with seq 1 to 3."""
+    return records_for(
+        [
+            Submit(buy("b1", 100, participant_id="p1")),
+            Submit(sell("s1", 100, quantity=4, participant_id="p2")),
+            Cancel("nope"),
+        ]
     )

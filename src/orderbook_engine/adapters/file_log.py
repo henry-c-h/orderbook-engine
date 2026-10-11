@@ -45,6 +45,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import BinaryIO, Self
 
+from orderbook_engine.app.event_log import CorruptLogError, LogFailedError
 from orderbook_engine.app.log_record import (
     LogFormatError,
     LogRecord,
@@ -58,25 +59,6 @@ _HEADER = _MAGIC + bytes([_VERSION])
 _FRAME = struct.Struct(">II")  # payload length, CRC32 of length bytes + payload
 
 MAX_PAYLOAD_SIZE = 1024 * 1024  # bytes; a larger length on disk is not a torn write
-
-
-class CorruptLogError(Exception):
-    """The file is damaged in a way that recovery does not repair.
-
-    `offset` is the byte offset of the first bad record, or 0 for the header.
-    """
-
-    def __init__(self, offset: int, message: str) -> None:
-        super().__init__(f"corrupt log at byte {offset}: {message}")
-        self.offset = offset
-
-
-class LogFailedError(Exception):
-    """An earlier append failed, so the log refuses more appends.
-
-    The failed record may or may not have reached the file. Reopen the log to
-    find out: opening repairs a half-written record.
-    """
 
 
 class _TornTail(Exception):
