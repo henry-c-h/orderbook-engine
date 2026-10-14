@@ -12,6 +12,9 @@ wheels/
 # Hypothesis example database
 .hypothesis/
 
+# Event log files written by the server
+*.log
+
 # Local claude instructions
 CLAUDE.local.md
 .claude/settings.local.json
