@@ -1,6 +1,6 @@
 # Matching Engine Spec (v1)
 
-Single instrument, single-threaded deterministic core. Everything else (async, API, UI) wraps this.
+Single instrument, single-threaded deterministic core. Everything else (sequencer, event log, API) wraps this.
 
 ## Representation
 
@@ -35,7 +35,12 @@ Single instrument, single-threaded deterministic core. Everything else (async, A
 
 - `order_id` is unique across all participants while the order is live. Submitting an order whose `order_id` is already live is `Rejected(DUPLICATE_ORDER_ID)` and the book is unchanged.
 - Filled and cancelled orders are no longer live, and their ids may be reused. This keeps the engine's id index bounded by the number of live orders.
-- The engine has no concept of client order ids. Mapping a participant's client order id to an engine `order_id` is the gateway's job.
+- The engine has no concept of client order ids. In the current implementation
+  the client's `order_id` is the engine's `order_id`; the gateway does no
+  mapping. Ids share one namespace across participants: while an order is
+  live, no other participant can use the same id (the second is
+  `Rejected(DUPLICATE_ORDER_ID)`). Per-participant id namespaces are not
+  implemented.
 
 ## Self-trade prevention: cancel-newest
 
@@ -58,7 +63,3 @@ Self-trade prevention supports one mode (cancel newest, keyed by participant). E
 - No trade has non-positive price or quantity; trade price equals the resting order's price.
 - Replay of the same input log yields an identical event log.
 - Sum of buyer-side fills equals sum of seller-side fills.
-
-## Deliberately out of scope (state in README)
-
-Multiple instruments, FOK, post-only, stop/iceberg orders, auctions, fees, authentication, multi-node replication, any claim about production latency.
