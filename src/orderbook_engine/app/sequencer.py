@@ -34,6 +34,11 @@ recovers the book from the records. A client that gets `SequencerStoppedError`
 for a command cannot know whether it was logged, and should resubmit it to the
 new sequencer: a Submit gets its original Outcome if it was logged.
 
+Market data. With a `Feed`, the sequencer hands it each record after the append
+and after its own state is updated, and each verified record at `start()`. The
+feed never raises or waits, so a feed failure cannot fail a command. The
+sequencer closes the feed when it stops (code 1001) or fails (code 1011).
+
 A client that cancels its `submit` call does not stop the command: it is still
 processed and logged if it was queued.
 
@@ -50,6 +55,11 @@ from dataclasses import dataclass
 from enum import Enum, auto
 
 from orderbook_engine.app.event_log import EventLog
+from orderbook_engine.app.feed import (
+    CLOSE_GOING_AWAY,
+    CLOSE_INTERNAL_ERROR,
+    Feed,
+)
 from orderbook_engine.app.log_record import LogRecord
 from orderbook_engine.app.recovery import recover_book
 from orderbook_engine.domain.commands import Command, Submit
@@ -103,11 +113,14 @@ class Sequencer:
     once: to run again, build a new one on the same log.
     """
 
-    def __init__(self, log: EventLog, *, queue_size: int = 1024) -> None:
+    def __init__(
+        self, log: EventLog, *, queue_size: int = 1024, feed: Feed | None = None
+    ) -> None:
         if queue_size < 1:
             # asyncio treats a size of 0 as an unbounded queue.
             raise ValueError(f"queue_size must be at least 1, got {queue_size}")
         self._log = log
+        self._feed = feed
         self._queue: asyncio.Queue[_Item] = asyncio.Queue(maxsize=queue_size)
         self._book = OrderBook()
         self._next_seq = 1
@@ -125,7 +138,9 @@ class Sequencer:
         if self._state is not _State.NEW:
             raise RuntimeError("the sequencer was already started")
         table: _Table = {}
-        recovered = recover_book(_remembering_submits(self._log.read_records(), table))
+        recovered = recover_book(
+            _remembering_submits(self._log.read_records(), table, self._feed)
+        )
         self._book = recovered.book
         self._next_seq = recovered.next_seq
         self._table = table
@@ -192,6 +207,8 @@ class Sequencer:
                     # if every `stop()` call was cancelled while waiting.
                     finished = True
                     self._state = _State.STOPPED
+                    if self._feed is not None:
+                        self._feed.close(CLOSE_GOING_AWAY)
                     return
                 try:
                     outcome = self._process(command)
@@ -210,6 +227,8 @@ class Sequencer:
                 # Also when the worker is cancelled, so no client waits forever.
                 self._state = _State.FAILED
                 self._fail_pending(in_flight)
+                if self._feed is not None:
+                    self._feed.close(CLOSE_INTERNAL_ERROR)
 
     def _process(self, command: Command) -> Outcome:
         """Run one command, append its record and return its Outcome."""
@@ -219,10 +238,15 @@ class Sequencer:
                 return stored[1]
         seq = self._next_seq
         events = tuple(apply_command(self._book, command, seq))
-        self._log.append(LogRecord(seq, command, events))
+        record = LogRecord(seq, command, events)
+        self._log.append(record)
         self._next_seq += 1
         outcome = Outcome(seq, events)
         _remember(self._table, command, outcome)
+        # Last, so that the log and the sequencer's state are complete if the
+        # feed misbehaves. `publish` never raises or waits.
+        if self._feed is not None:
+            self._feed.publish(record)
         return outcome
 
     def _fail_pending(self, in_flight: asyncio.Future[Outcome] | None) -> None:
@@ -255,9 +279,13 @@ def _remember(table: _Table, command: Command, outcome: Outcome) -> None:
 
 
 def _remembering_submits(
-    records: Iterable[LogRecord], table: _Table
+    records: Iterable[LogRecord], table: _Table, feed: Feed | None
 ) -> Iterator[LogRecord]:
-    """Pass `records` through, filling `table` as `recover_book` checks them."""
+    """Pass `records` through, filling `table` and the feed as `recover_book`
+    checks them. A record reaches the feed only after it was verified.
+    """
     for record in records:
         yield record
         _remember(table, record.command, Outcome(record.seq, record.events))
+        if feed is not None:
+            feed.publish(record)
